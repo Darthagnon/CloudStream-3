@@ -24,6 +24,7 @@ import com.lagradost.cloudstream3.R
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.mvvm.logError
 import com.lagradost.cloudstream3.mvvm.normalSafeApiCall
+import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import kotlinx.coroutines.runBlocking
 import java.io.File
 import kotlin.concurrent.thread
@@ -44,6 +45,7 @@ class InAppUpdater {
             @JsonProperty("assets") val assets: List<GithubAsset>,
             @JsonProperty("target_commitish") val target_commitish: String, // branch
             @JsonProperty("prerelease") val prerelease: Boolean,
+            @JsonProperty("node_id") val node_id: String //Node Id
         )
 
         data class GithubObject(
@@ -61,10 +63,8 @@ class InAppUpdater {
             @JsonProperty("updateURL") val updateURL: String?,
             @JsonProperty("updateVersion") val updateVersion: String?,
             @JsonProperty("changelog") val changelog: String?,
+            @JsonProperty("updateNodeId") val updateNodeId: String?
         )
-
-        private val mapper = JsonMapper.builder().addModule(KotlinModule())
-            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false).build()
 
         private fun Activity.getAppUpdate(): Update {
             return try {
@@ -76,7 +76,7 @@ class InAppUpdater {
                 }
             } catch (e: Exception) {
                 println(e)
-                Update(false, null, null, null)
+                Update(false, null, null, null, null)
             }
         }
 
@@ -84,7 +84,7 @@ class InAppUpdater {
             val url = "https://api.github.com/repos/LagradOst/CloudStream-3/releases"
             val headers = mapOf("Accept" to "application/vnd.github.v3+json")
             val response =
-                mapper.readValue<List<GithubRelease>>(runBlocking {
+                parseJson<List<GithubRelease>>(runBlocking {
                     app.get(
                         url,
                         headers = headers
@@ -136,13 +136,14 @@ class InAppUpdater {
                         shouldUpdate,
                         foundAsset.browser_download_url,
                         foundVersion.groupValues[2],
-                        found.body
+                        found.body,
+                        found.node_id
                     )
                 } else {
-                    Update(false, null, null, null)
+                    Update(false, null, null, null, null)
                 }
             }
-            return Update(false, null, null, null)
+            return Update(false, null, null, null, null)
         }
 
         private fun Activity.getPreReleaseUpdate(): Update = runBlocking {
@@ -151,7 +152,7 @@ class InAppUpdater {
             val releaseUrl = "https://api.github.com/repos/LagradOst/CloudStream-3/releases"
             val headers = mapOf("Accept" to "application/vnd.github.v3+json")
             val response =
-                mapper.readValue<List<GithubRelease>>(app.get(releaseUrl, headers = headers).text)
+                parseJson<List<GithubRelease>>(app.get(releaseUrl, headers = headers).text)
 
             val found =
                 response.lastOrNull { rel ->
@@ -160,7 +161,7 @@ class InAppUpdater {
             val foundAsset = found?.assets?.getOrNull(0)
 
             val tagResponse =
-                mapper.readValue<GithubTag>(app.get(tagUrl, headers = headers).text)
+                parseJson<GithubTag>(app.get(tagUrl, headers = headers).text)
 
             val shouldUpdate =
                 (getString(R.string.prerelease_commit_hash) != tagResponse.github_object.sha)
@@ -170,10 +171,11 @@ class InAppUpdater {
                     shouldUpdate,
                     foundAsset.browser_download_url,
                     tagResponse.github_object.sha,
-                    found.body
+                    found.body,
+                    found.node_id
                 )
             } else {
-                Update(false, null, null, null)
+                Update(false, null, null, null, null)
             }
         }
 
@@ -265,6 +267,11 @@ class InAppUpdater {
             ) {
                 val update = getAppUpdate()
                 if (update.shouldUpdate && update.updateURL != null) {
+                    //Check if update should be skipped
+                    val updateNodeId = settingsManager.getString(getString(R.string.skip_update_key), "")
+                    if (update.updateNodeId.equals(updateNodeId)) {
+                        return false
+                    }
                     runOnUiThread {
                         try {
                             val currentVersion = packageName?.let {
@@ -306,8 +313,8 @@ class InAppUpdater {
                                 setNegativeButton(R.string.cancel) { _, _ -> }
 
                                 if (checkAutoUpdate) {
-                                    setNeutralButton(R.string.dont_show_again) { _, _ ->
-                                        settingsManager.edit().putBoolean("auto_update", false)
+                                    setNeutralButton(R.string.skip_update) { _, _ ->
+                                        settingsManager.edit().putString(getString(R.string.skip_update_key), update.updateNodeId ?: "")
                                             .apply()
                                     }
                                 }

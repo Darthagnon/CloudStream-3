@@ -27,6 +27,7 @@ import com.lagradost.cloudstream3.AcraApplication.Companion.removeKey
 import com.lagradost.cloudstream3.AcraApplication.Companion.setKey
 import com.lagradost.cloudstream3.MainActivity
 import com.lagradost.cloudstream3.R
+import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.mvvm.logError
 import com.lagradost.cloudstream3.mvvm.normalSafeApiCall
 import com.lagradost.cloudstream3.services.VideoDownloadService
@@ -37,6 +38,7 @@ import com.lagradost.cloudstream3.utils.DataStore.removeKey
 import com.lagradost.cloudstream3.utils.UIHelper.colorFromAttribute
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import okhttp3.internal.closeQuietly
 import java.io.BufferedInputStream
@@ -116,7 +118,8 @@ object VideoDownloadManager {
         @JsonProperty("poster") val poster: String?,
         @JsonProperty("name") val name: String?,
         @JsonProperty("season") val season: Int?,
-        @JsonProperty("episode") val episode: Int?
+        @JsonProperty("episode") val episode: Int?,
+        @JsonProperty("type") val type: TvType?,
     )
 
     data class DownloadItem(
@@ -579,7 +582,7 @@ object VideoDownloadManager {
      * Sets up the appropriate file and creates a data stream from the file.
      * Used for initializing downloads.
      * */
-    private fun setupStream(
+    fun setupStream(
         context: Context,
         name: String,
         folder: String?,
@@ -1111,13 +1114,7 @@ object VideoDownloadManager {
         logcatPrint("initialised the HLS downloader.")
 
         val m3u8 = M3u8Helper.M3u8Stream(
-            link.url, when (link.quality) {
-                -2 -> 360
-                -1 -> 480
-                1 -> 720
-                2 -> 1080
-                else -> null
-            }, mapOf("referer" to link.referer)
+            link.url, link.quality, mapOf("referer" to link.referer)
         )
 
         var realIndex = startIndex ?: 0
@@ -1133,7 +1130,9 @@ object VideoDownloadManager {
 
         if (!stream.resume!!) realIndex = 0
         val fileLengthAdd = stream.fileLength!!
-        val tsIterator = m3u8Helper.hlsYield(listOf(m3u8), realIndex)
+        val tsIterator = runBlocking {
+            m3u8Helper.hlsYield(listOf(m3u8), realIndex)
+        }
 
         val displayName = getDisplayName(name, extension)
 
@@ -1335,6 +1334,38 @@ object VideoDownloadManager {
         return SUCCESS_DOWNLOAD_DONE
     }
 
+    fun getFileName(context: Context, metadata: DownloadEpisodeMetadata): String {
+        return getFileName(context, metadata.name, metadata.episode, metadata.season)
+    }
+
+    private fun getFileName(
+        context: Context,
+        epName: String?,
+        episode: Int?,
+        season: Int?
+    ): String {
+        // kinda ugly ik
+        return sanitizeFilename(
+            if (epName == null) {
+                if (season != null) {
+                    "${context.getString(R.string.season)} $season ${context.getString(R.string.episode)} $episode"
+                } else {
+                    "${context.getString(R.string.episode)} $episode"
+                }
+            } else {
+                if (episode != null) {
+                    if (season != null) {
+                        "${context.getString(R.string.season)} $season ${context.getString(R.string.episode)} $episode - $epName"
+                    } else {
+                        "${context.getString(R.string.episode)} $episode - $epName"
+                    }
+                } else {
+                    epName
+                }
+            }
+        )
+    }
+
     private fun downloadSingleEpisode(
         context: Context,
         source: String?,
@@ -1344,19 +1375,7 @@ object VideoDownloadManager {
         notificationCallback: (Int, Notification) -> Unit,
         tryResume: Boolean = false,
     ): Int {
-        val name =
-            // kinda ugly ik
-            sanitizeFilename(
-                if (ep.name == null) {
-                    "${context.getString(R.string.episode)} ${ep.episode}"
-                } else {
-                    if (ep.episode != null) {
-                        "${context.getString(R.string.episode)} ${ep.episode} - ${ep.name}"
-                    } else {
-                        ep.name
-                    }
-                }
-            )
+        val name = getFileName(context, ep)
 
         // Make sure this is cancelled when download is done or cancelled.
         val extractorJob = ioSafe {
@@ -1472,27 +1491,33 @@ object VideoDownloadManager {
     }
 
     private fun getDownloadFileInfo(context: Context, id: Int): DownloadedFileInfoResult? {
-        val info =
-            context.getKey<DownloadedFileInfo>(KEY_DOWNLOAD_INFO, id.toString()) ?: return null
-        val base = basePathToFile(context, info.basePath)
+        try {
+            val info =
+                context.getKey<DownloadedFileInfo>(KEY_DOWNLOAD_INFO, id.toString()) ?: return null
+            val base = basePathToFile(context, info.basePath)
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && base.isDownloadDir()) {
-            val cr = context.contentResolver ?: return null
-            val fileUri =
-                cr.getExistingDownloadUriOrNullQ(info.relativePath, info.displayName) ?: return null
-            val fileLength = cr.getFileLength(fileUri) ?: return null
-            if (fileLength == 0L) return null
-            return DownloadedFileInfoResult(fileLength, info.totalBytes, fileUri)
-        } else {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && base.isDownloadDir()) {
+                val cr = context.contentResolver ?: return null
+                val fileUri =
+                    cr.getExistingDownloadUriOrNullQ(info.relativePath, info.displayName)
+                        ?: return null
+                val fileLength = cr.getFileLength(fileUri) ?: return null
+                if (fileLength == 0L) return null
+                return DownloadedFileInfoResult(fileLength, info.totalBytes, fileUri)
+            } else {
 
-            val file = base?.gotoDir(info.relativePath, false)?.findFile(info.displayName)
+                val file = base?.gotoDir(info.relativePath, false)?.findFile(info.displayName)
 
 //            val normalPath = context.getNormalPath(getFile(info.relativePath), info.displayName)
 //            val dFile = File(normalPath)
 
-            if (file?.exists() != true) return null
+                if (file?.exists() != true) return null
 
-            return DownloadedFileInfoResult(file.size(), info.totalBytes, file.uri)
+                return DownloadedFileInfoResult(file.size(), info.totalBytes, file.uri)
+            }
+        } catch (e: Exception) {
+            logError(e)
+            return null
         }
     }
 
@@ -1580,11 +1605,15 @@ object VideoDownloadManager {
     }
 
     private fun saveQueue() {
-        val dQueue =
-            downloadQueue.toList()
-                .mapIndexed { index, any -> DownloadQueueResumePackage(index, any) }
-                .toTypedArray()
-        setKey(KEY_RESUME_QUEUE_PACKAGES, dQueue)
+        try {
+            val dQueue =
+                downloadQueue.toList()
+                    .mapIndexed { index, any -> DownloadQueueResumePackage(index, any) }
+                    .toTypedArray()
+            setKey(KEY_RESUME_QUEUE_PACKAGES, dQueue)
+        } catch (e : Exception) {
+            logError(e)
+        }
     }
 
     /*fun isMyServiceRunning(context: Context, serviceClass: Class<*>): Boolean {

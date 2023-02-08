@@ -2,7 +2,6 @@ package com.lagradost.cloudstream3.utils
 
 import android.annotation.SuppressLint
 import android.app.Activity
-import android.content.ComponentName
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
@@ -19,10 +18,16 @@ import android.os.Build
 import android.os.Environment
 import android.os.ParcelFileDescriptor
 import android.provider.MediaStore
+import android.text.Spanned
 import android.util.Log
 import androidx.annotation.RequiresApi
 import androidx.annotation.WorkerThread
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
+import androidx.core.text.HtmlCompat
+import androidx.core.text.toSpanned
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
 import androidx.tvprovider.media.tv.PreviewChannelHelper
 import androidx.tvprovider.media.tv.TvContractCompat
 import androidx.tvprovider.media.tv.WatchNextProgram
@@ -33,7 +38,10 @@ import com.google.android.gms.cast.framework.CastState
 import com.google.android.gms.common.ConnectionResult
 import com.google.android.gms.common.GoogleApiAvailability
 import com.google.android.gms.common.wrappers.Wrappers
-import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.R
+import com.lagradost.cloudstream3.SearchResponse
+import com.lagradost.cloudstream3.isMovieType
+import com.lagradost.cloudstream3.mapper
 import com.lagradost.cloudstream3.mvvm.logError
 import com.lagradost.cloudstream3.ui.result.ResultFragment
 import com.lagradost.cloudstream3.utils.Coroutines.ioSafe
@@ -46,6 +54,18 @@ import java.net.URL
 import java.net.URLDecoder
 
 object AppUtils {
+    fun RecyclerView.setMaxViewPoolSize(maxViewTypeId: Int, maxPoolSize: Int) {
+        for (i in 0..maxViewTypeId)
+            recycledViewPool.setMaxRecycledViews(i, maxPoolSize)
+    }
+
+    fun RecyclerView.isRecyclerScrollable(): Boolean {
+        val layoutManager =
+            this.layoutManager as? LinearLayoutManager?
+        val adapter = adapter
+        return if (layoutManager == null || adapter == null) false else layoutManager.findLastCompletelyVisibleItemPosition() < adapter.itemCount - 2
+    }
+
     //fun Context.deleteFavorite(data: SearchResponse) {
     //    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
     //    normalSafeApiCall {
@@ -58,12 +78,28 @@ object AppUtils {
     //        )
     //    }
     //}
+    fun String?.html(): Spanned {
+        return getHtmlText(this ?: return "".toSpanned())
+    }
+
+    private fun getHtmlText(text: String): Spanned {
+        return try {
+            // I have no idea if this can throw any error, but I dont want to try
+            HtmlCompat.fromHtml(
+                text, HtmlCompat.FROM_HTML_MODE_LEGACY
+            )
+        } catch (e: Exception) {
+            logError(e)
+            text.toSpanned()
+        }
+    }
+
     @SuppressLint("RestrictedApi")
     private fun buildWatchNextProgramUri(
         context: Context,
         card: DataStoreHelper.ResumeWatchingResult
     ): WatchNextProgram {
-        val isSeries = !card.type.isMovieType()
+        val isSeries = card.type?.isMovieType() == false
         val title = if (isSeries) {
             context.getNameFull(card.name, card.episode, card.season)
         } else {
@@ -196,17 +232,10 @@ object AppUtils {
 
     fun Context.openBrowser(url: String) {
         try {
-            val components = arrayOf(ComponentName(applicationContext, MainActivity::class.java))
             val intent = Intent(Intent.ACTION_VIEW)
             intent.data = Uri.parse(url)
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N)
-                startActivity(
-                    Intent.createChooser(intent, null)
-                        .putExtra(Intent.EXTRA_EXCLUDE_COMPONENTS, components)
-                )
-            else
-                startActivity(intent)
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+            ContextCompat.startActivity(this, intent, null)
         } catch (e: Exception) {
             logError(e)
         }
@@ -226,6 +255,7 @@ object AppUtils {
 
     /** Any object as json string */
     fun Any.toJson(): String {
+        if (this is String) return this
         return mapper.writeValueAsString(this)
     }
 
@@ -233,9 +263,9 @@ object AppUtils {
         return mapper.readValue(value)
     }
 
-    inline fun <reified T> tryParseJson(value: String): T? {
+    inline fun <reified T> tryParseJson(value: String?): T? {
         return try {
-            parseJson(value)
+            parseJson(value ?: return null)
         } catch (_: Exception) {
             null
         }
@@ -301,9 +331,16 @@ object AppUtils {
     fun Activity?.loadSearchResult(
         card: SearchResponse,
         startAction: Int = 0,
-        startValue: Int = 0
+        startValue: Int? = null,
     ) {
-        (this as? AppCompatActivity?)?.loadResult(card.url, card.apiName, startAction, startValue)
+        this?.runOnUiThread {
+            // viewModelStore.clear()
+            this.navigate(
+                R.id.global_to_navigation_results,
+                ResultFragment.newInstance(card, startAction, startValue)
+            )
+        }
+        //(this as? AppCompatActivity?)?.loadResult(card.url, card.apiName, startAction, startValue)
     }
 
     fun Activity.requestLocalAudioFocus(focusRequest: AudioFocusRequest?) {
@@ -480,14 +517,13 @@ object AppUtils {
 
     fun Context.isAppInstalled(uri: String): Boolean {
         val pm = Wrappers.packageManager(this)
-        var appInstalled = false
-        appInstalled = try {
-            pm.getPackageInfo(uri, PackageManager.GET_ACTIVITIES)
+
+        return try {
+            pm.getPackageInfo(uri, 0) // PackageManager.GET_ACTIVITIES
             true
         } catch (e: PackageManager.NameNotFoundException) {
             false
         }
-        return appInstalled
     }
 
     fun getFocusRequest(): AudioFocusRequest? {

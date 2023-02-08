@@ -46,6 +46,10 @@ class DownloadFileGenerator(
         return episodes.getOrNull(currentIndex + offset)
     }
 
+    override fun getAll(): List<Any>? {
+        return null
+    }
+
     override suspend fun generateLinks(
         clearCache: Boolean,
         isCasting: Boolean,
@@ -71,6 +75,9 @@ class DownloadFileGenerator(
                             .removeSuffix(".vtt")
                             .removeSuffix(".srt")
                             .removeSuffix(".txt")
+                            .trim()
+                            .removePrefix("(")
+                            .removeSuffix(")")
 
                         subtitleCallback(
                             SubtitleData(

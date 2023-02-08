@@ -7,7 +7,7 @@ import com.lagradost.cloudstream3.TvType
  */
 class VidEmbedProvider : VidstreamProviderTemplate() {
     // mainUrl is good to have as a holder for the url to make future changes easier.
-    override var mainUrl = "https://vidembed.cc"
+    override var mainUrl = "https://membed.net"
 
     // name is for how the provider will be named which is visible in the UI, no real rules for this.
     override var name = "VidEmbed"
@@ -19,6 +19,10 @@ class VidEmbedProvider : VidstreamProviderTemplate() {
         "$mainUrl/recommended-series",
         "$mainUrl/cinema-movies"
     )
+
+    override val iv = "9225679083961858"
+    override val secretKey = "25742532592138496744665879883281"
+    override val secretDecryptKey = secretKey
 
     // This is just extra metadata about what type of movies the provider has.
     // Needed for search functionality.

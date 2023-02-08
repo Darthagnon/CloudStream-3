@@ -1,15 +1,18 @@
 package com.lagradost.cloudstream3.extractors
 
 import com.fasterxml.jackson.annotation.JsonProperty
-import com.fasterxml.jackson.module.kotlin.readValue
-import com.lagradost.cloudstream3.apmap
+import com.lagradost.cloudstream3.ErrorLoadingException
+import com.lagradost.cloudstream3.animeproviders.NineAnimeProvider.Companion.cipher
+import com.lagradost.cloudstream3.animeproviders.NineAnimeProvider.Companion.encrypt
 import com.lagradost.cloudstream3.app
-import com.lagradost.cloudstream3.mapper
-import com.lagradost.cloudstream3.utils.*
+import com.lagradost.cloudstream3.utils.ExtractorApi
+import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.Qualities
 
 class Vidstreamz : WcoStream() {
     override var mainUrl = "https://vidstreamz.online"
 }
+
 class Vizcloud : WcoStream() {
     override var mainUrl = "https://vizcloud2.ru"
 }
@@ -18,111 +21,107 @@ class Vizcloud2 : WcoStream() {
     override var mainUrl = "https://vizcloud2.online"
 }
 
+class VizcloudOnline : WcoStream() {
+    override var mainUrl = "https://vizcloud.online"
+}
+
+class VizcloudXyz : WcoStream() {
+    override var mainUrl = "https://vizcloud.xyz"
+}
+
+class VizcloudLive : WcoStream() {
+    override var mainUrl = "https://vizcloud.live"
+}
+
+class VizcloudInfo : WcoStream() {
+    override var mainUrl = "https://vizcloud.info"
+}
+
+class MwvnVizcloudInfo : WcoStream() {
+    override var mainUrl = "https://mwvn.vizcloud.info"
+}
+
+class VizcloudDigital : WcoStream() {
+    override var mainUrl = "https://vizcloud.digital"
+}
+
+class VizcloudCloud : WcoStream() {
+    override var mainUrl = "https://vizcloud.cloud"
+}
+
+class VizcloudSite : WcoStream() {
+    override var mainUrl = "https://vizcloud.site"
+}
+
 open class WcoStream : ExtractorApi() {
-    override var name = "VidStream" //Cause works for animekisa and wco
+    override var name = "VidStream" // Cause works for animekisa and wco
     override var mainUrl = "https://vidstream.pro"
     override val requiresReferer = false
-    private val hlsHelper = M3u8Helper()
+    private val regex = Regex("(.+?/)e(?:mbed)?/([a-zA-Z0-9]+)")
 
-    override suspend fun getUrl(url: String, referer: String?): List<ExtractorLink> {
-        val baseUrl = url.split("/e/")[0]
-
-        val html = app.get(url, headers = mapOf("Referer" to "https://wcostream.cc/")).text
-        val (Id) = (Regex("/e/(.*?)?domain").find(url)?.destructured ?: Regex("""/e/(.*)""").find(url)?.destructured) ?: return emptyList()
-        val (skey) = Regex("""skey\s=\s['"](.*?)['"];""").find(html)?.destructured ?: return emptyList()
-
-        val apiLink = "$baseUrl/info/$Id?domain=wcostream.cc&skey=$skey"
-        val referrer = "$baseUrl/e/$Id?domain=wcostream.cc"
-
-        val response = app.get(apiLink, headers = mapOf("Referer" to referrer)).text
-
-        data class Sources(
-            @JsonProperty("file") val file: String,
-            @JsonProperty("label") val label: String?
-        )
-
-        data class Media(
-            @JsonProperty("sources") val sources: List<Sources>
-        )
-
-        data class WcoResponse(
-            @JsonProperty("success") val success: Boolean,
-            @JsonProperty("media") val media: Media
-        )
-
-        val mapped = response.let { mapper.readValue<WcoResponse>(it) }
-        val sources = mutableListOf<ExtractorLink>()
-
-        if (mapped.success) {
-            mapped.media.sources.forEach {
-                if (mainUrl == "https://vizcloud2.ru") {
-                    if (it.file.contains("vizcloud2.ru")) {
-                        //Had to do this thing 'cause "list.m3u8#.mp4" gives 404 error so no quality is added
-                        val link1080 = it.file.replace("list.m3u8#.mp4","H4/v.m3u8")
-                        val link720 = it.file.replace("list.m3u8#.mp4","H3/v.m3u8")
-                        val link480 = it.file.replace("list.m3u8#.mp4","H2/v.m3u8")
-                        val link360 = it.file.replace("list.m3u8#.mp4","H1/v.m3u8")
-                        val linkauto = it.file.replace("#.mp4","")
-                        listOf(
-                            link1080,
-                            link720,
-                            link480,
-                            link360,
-                            linkauto).apmap { serverurl ->
-                            val testurl = app.get(serverurl, headers = mapOf("Referer" to url)).text
-                            if (testurl.contains("EXTM3")) {
-                                val quality = if (serverurl.contains("H4")) "1080p"
-                                else if (serverurl.contains("H3")) "720p"
-                                else if (serverurl.contains("H2")) "480p"
-                                else if (serverurl.contains("H1")) "360p"
-                                else "Auto"
-                                sources.add(
-                                    ExtractorLink(
-                                        "VidStream",
-                                        "VidStream $quality",
-                                        serverurl,
-                                        url,
-                                        getQualityFromName(quality),
-                                        true,
-                                    )
-                                )
-                            }
-                        }
-                    }
+    companion object {
+        // taken from https://github.com/saikou-app/saikou/blob/b35364c8c2a00364178a472fccf1ab72f09815b4/app/src/main/java/ani/saikou/parsers/anime/extractors/VizCloud.kt
+        // GNU General Public License v3.0 https://github.com/saikou-app/saikou/blob/main/LICENSE.md
+        private var lastChecked = 0L
+        private const val jsonLink =
+            "https://raw.githubusercontent.com/chenkaslowankiya/BruhFlow/main/keys.json"
+        private var cipherKey: VizCloudKey? = null
+        suspend fun getKey(): VizCloudKey {
+            cipherKey =
+                if (cipherKey != null && (lastChecked - System.currentTimeMillis()) < 1000 * 60 * 30) cipherKey!!
+                else {
+                    lastChecked = System.currentTimeMillis()
+                    app.get(jsonLink).parsed()
                 }
-                if (mainUrl == "https://vidstream.pro" || mainUrl == "https://vidstreamz.online" || mainUrl == "https://vizcloud2.online") {
-                if (it.file.contains("m3u8")) {
-                    hlsHelper.m3u8Generation(M3u8Helper.M3u8Stream(it.file.replace("#.mp4",""), null,
-                    headers = mapOf("Referer" to url)), true)
-                        .forEach { stream ->
-                            val qualityString =
-                                if ((stream.quality ?: 0) == 0) "" else "${stream.quality}p"
-                            sources.add(
-                                ExtractorLink(
-                                    name,
-                                    "$name $qualityString",
-                                    stream.streamUrl,
-                                    url,
-                                    getQualityFromName(stream.quality.toString()),
-                                    true,
-                                )
-                            )
-                        }
-                } else {
-                    sources.add(
-                        ExtractorLink(
-                            name,
-                            name + if (it.label != null) " - ${it.label}" else "",
-                            it.file,
-                            "",
-                            Qualities.P720.value,
-                            false
-                        )
-                    )
-                }
-                }
-            }
+            return cipherKey!!
         }
-        return sources
+
+        data class VizCloudKey(
+            @JsonProperty("cipherKey") val cipherKey: String,
+            @JsonProperty("mainKey") val mainKey: String,
+            @JsonProperty("encryptKey") val encryptKey: String,
+            @JsonProperty("dashTable") val dashTable: String
+        )
+
+        private const val baseTable =
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+=/_"
+
+        private fun dashify(id: String, dashTable: String): String {
+            val table = dashTable.split(" ")
+            return id.mapIndexedNotNull { i, c ->
+                table.getOrNull((baseTable.indexOf(c) * 16) + (i % 16))
+            }.joinToString("-")
+        }
+    }
+
+    //private val key = "LCbu3iYC7ln24K7P" // key credits @Modder4869
+    override suspend fun getUrl(url: String, referer: String?): List<ExtractorLink> {
+        val group = regex.find(url)?.groupValues!!
+
+        val host = group[1]
+        val viz = getKey()
+        val id = encrypt(
+            cipher(
+                viz.cipherKey,
+                encrypt(group[2], viz.encryptKey).also { println(it) }
+            ).also { println(it) },
+            viz.encryptKey
+        ).also { println(it) }
+
+        val link =
+            "${host}mediainfo/${dashify(id, viz.dashTable)}?key=${viz.mainKey}" //
+        val response = app.get(link, referer = referer)
+
+        data class Sources(@JsonProperty("file") val file: String)
+        data class Media(@JsonProperty("sources") val sources: List<Sources>)
+        data class Data(@JsonProperty("media") val media: Media)
+        data class Response(@JsonProperty("data") val data: Data)
+
+
+        if (!response.text.startsWith("{")) throw ErrorLoadingException("Seems like 9Anime kiddies changed stuff again, Go touch some grass for bout an hour Or use a different Server")
+        return response.parsed<Response>().data.media.sources.map {
+            ExtractorLink(name, it.file,it.file,host,Qualities.Unknown.value,it.file.contains(".m3u8"))
+        }
+
     }
 }

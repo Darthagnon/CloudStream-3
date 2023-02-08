@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.content.res.Resources
 import android.os.Build
+import android.util.Log
 import android.view.*
 import android.widget.TextView
 import android.widget.Toast
@@ -21,6 +22,7 @@ import com.lagradost.cloudstream3.utils.UIHelper
 import com.lagradost.cloudstream3.utils.UIHelper.hasPIPPermission
 import com.lagradost.cloudstream3.utils.UIHelper.shouldShowPIPMode
 import com.lagradost.cloudstream3.utils.UIHelper.toPx
+import org.schabi.newpipe.extractor.NewPipe
 import java.util.*
 
 object CommonActivity {
@@ -32,7 +34,6 @@ object CommonActivity {
     var canShowPipMode: Boolean = false
     var isInPIPMode: Boolean = false
 
-    val backEvent = Event<Boolean>()
     val onColorSelectedEvent = Event<Pair<Int, Int>>()
     val onDialogDismissedEvent = Event<Int>()
 
@@ -47,13 +48,20 @@ object CommonActivity {
         showToast(act, act.getString(message), duration)
     }
 
+    const val TAG = "COMPACT"
+
     /** duration is Toast.LENGTH_SHORT if null*/
     fun showToast(act: Activity?, message: String?, duration: Int? = null) {
-        if (act == null || message == null) return
+        if (act == null || message == null) {
+            Log.w(TAG, "invalid showToast act = $act message = $message")
+            return
+        }
+        Log.i(TAG, "showToast = $message")
+
         try {
             currentToast?.cancel()
         } catch (e: Exception) {
-            e.printStackTrace()
+            logError(e)
         }
         try {
             val inflater =
@@ -71,10 +79,11 @@ object CommonActivity {
             toast.setGravity(Gravity.CENTER_HORIZONTAL or Gravity.BOTTOM, 0, 5.toPx)
             toast.duration = duration ?: Toast.LENGTH_SHORT
             toast.view = layout
+            //https://github.com/PureWriter/ToastCompat
             toast.show()
             currentToast = toast
         } catch (e: Exception) {
-
+            logError(e)
         }
     }
 
@@ -102,11 +111,13 @@ object CommonActivity {
         //https://stackoverflow.com/questions/52594181/how-to-know-if-user-has-disabled-picture-in-picture-feature-permission
         //https://developer.android.com/guide/topics/ui/picture-in-picture
         canShowPipMode =
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && // OS SUPPORT
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && // OS SUPPORT
                     act.packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE) && // HAS FEATURE, MIGHT BE BLOCKED DUE TO POWER DRAIN
                     act.hasPIPPermission() // CHECK IF FEATURE IS ENABLED IN SETTINGS
 
         act.updateLocale()
+
+        NewPipe.init(DownloaderTestImpl.getInstance())
     }
 
     private fun Activity.enterPIPMode() {
@@ -150,7 +161,13 @@ object CommonActivity {
         val currentOverlayTheme =
             when (settingsManager.getString(act.getString(R.string.primary_color_key), "Normal")) {
                 "Normal" -> R.style.OverlayPrimaryColorNormal
-                "Blue" -> R.style.OverlayPrimaryColorBlue
+                "CarnationPink" -> R.style.OverlayPrimaryColorCarnationPink
+                "DarkGreen" -> R.style.OverlayPrimaryColorDarkGreen
+                "Maroon" -> R.style.OverlayPrimaryColorMaroon
+                "NavyBlue" -> R.style.OverlayPrimaryColorNavyBlue
+                "Grey" -> R.style.OverlayPrimaryColorGrey
+                "White" -> R.style.OverlayPrimaryColorWhite
+                "Brown" -> R.style.OverlayPrimaryColorBrown
                 "Purple" -> R.style.OverlayPrimaryColorPurple
                 "Green" -> R.style.OverlayPrimaryColorGreen
                 "GreenApple" -> R.style.OverlayPrimaryColorGreenApple
@@ -266,6 +283,10 @@ object CommonActivity {
             }
             KeyEvent.KEYCODE_S, KeyEvent.KEYCODE_NUMPAD_9 -> {
                 PlayerEventType.ShowMirrors
+            }
+            // OpenSubtitles shortcut
+            KeyEvent.KEYCODE_O, KeyEvent.KEYCODE_NUMPAD_8 -> {
+                PlayerEventType.SearchSubtitlesOnline
             }
             KeyEvent.KEYCODE_E, KeyEvent.KEYCODE_NUMPAD_3 -> {
                 PlayerEventType.ShowSpeed

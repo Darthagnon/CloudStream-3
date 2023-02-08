@@ -1,20 +1,34 @@
 package com.lagradost.cloudstream3.ui.search
 
+import android.content.Context
 import android.view.View
 import android.widget.ImageView
 import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.cardview.widget.CardView
 import androidx.core.view.isVisible
+import androidx.preference.PreferenceManager
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.ui.settings.SettingsFragment.Companion.isTrueTvSettings
 import com.lagradost.cloudstream3.utils.AppUtils.getNameFull
 import com.lagradost.cloudstream3.utils.DataStoreHelper
 import com.lagradost.cloudstream3.utils.DataStoreHelper.fixVisual
+import com.lagradost.cloudstream3.utils.SubtitleHelper
 import com.lagradost.cloudstream3.utils.UIHelper.setImage
 import kotlinx.android.synthetic.main.home_result_grid.view.*
 
 object SearchResultBuilder {
+    private val showCache: MutableMap<String, Boolean> = mutableMapOf()
+
+    fun updateCache(context: Context?) {
+        if (context == null) return
+        val settingsManager = PreferenceManager.getDefaultSharedPreferences(context)
+
+        for (k in context.resources.getStringArray(R.array.poster_ui_options_values)) {
+            showCache[k] = settingsManager.getBoolean(k, showCache[k] ?: true)
+        }
+    }
+
     /**
      * @param nextFocusBehavior True if first, False if last, Null if between.
      * Used to prevent escaping the adapter horizontally (focus wise).
@@ -33,8 +47,11 @@ object SearchResultBuilder {
 
         val textIsDub: TextView? = itemView.text_is_dub
         val textIsSub: TextView? = itemView.text_is_sub
+        val textFlag: TextView? = itemView.text_flag
+        val textQuality: TextView? = itemView.text_quality
+        val shadow: View? = itemView.title_shadow
 
-        val bg: CardView = itemView.backgroundCard
+        val bg: CardView = itemView.background_card
 
         val bar: ProgressBar? = itemView.watchProgress
         val playImg: ImageView? = itemView.search_item_download_play
@@ -45,11 +62,45 @@ object SearchResultBuilder {
         playImg?.isVisible = false
         textIsDub?.isVisible = false
         textIsSub?.isVisible = false
+        textFlag?.isVisible = false
+
+        val showSub = showCache[textIsDub?.context?.getString(R.string.show_sub_key)] ?: false
+        val showDub = showCache[textIsDub?.context?.getString(R.string.show_dub_key)] ?: false
+        val showTitle = showCache[cardText?.context?.getString(R.string.show_title_key)] ?: false
+        val showHd = showCache[textQuality?.context?.getString(R.string.show_hd_key)] ?: false
+
+        shadow?.isVisible = showTitle
+
+        when (card.quality) {
+            SearchQuality.BlueRay -> R.string.quality_blueray
+            SearchQuality.Cam -> R.string.quality_cam
+            SearchQuality.CamRip -> R.string.quality_cam_rip
+            SearchQuality.DVD -> R.string.quality_dvd
+            SearchQuality.HD -> R.string.quality_hd
+            SearchQuality.HQ -> R.string.quality_hq
+            SearchQuality.HdCam -> R.string.quality_cam_hd
+            SearchQuality.Telecine -> R.string.quality_tc
+            SearchQuality.Telesync -> R.string.quality_ts
+            SearchQuality.WorkPrint -> R.string.quality_workprint
+            SearchQuality.SD -> R.string.quality_sd
+            SearchQuality.FourK -> R.string.quality_4k
+            SearchQuality.UHD -> R.string.quality_uhd
+            SearchQuality.SDR -> R.string.quality_sdr
+            SearchQuality.HDR -> R.string.quality_hdr
+            SearchQuality.WebRip -> R.string.quality_webrip
+            null -> null
+        }?.let { textRes ->
+            textQuality?.setText(textRes)
+            textQuality?.isVisible = showHd
+        } ?: run {
+            textQuality?.isVisible = false
+        }
 
         cardText?.text = card.name
-
+        cardText?.isVisible = showTitle
         cardView.isVisible = true
-        if (!cardView.setImage(card.posterUrl)) {
+
+        if (!cardView.setImage(card.posterUrl, card.posterHeaders)) {
             cardView.setImageResource(R.drawable.default_cover)
         }
 
@@ -140,6 +191,14 @@ object SearchResultBuilder {
         }
 
         when (card) {
+            is LiveSearchResponse -> {
+                SubtitleHelper.getFlagFromIso(card.lang)?.let { flagEmoji ->
+                    textFlag?.apply {
+                        isVisible = true
+                        text = flagEmoji
+                    }
+                }
+            }
             is DataStoreHelper.ResumeWatchingResult -> {
                 val pos = card.watchPos?.fixVisual()
                 if (pos != null) {
@@ -150,26 +209,30 @@ object SearchResultBuilder {
 
                 playImg?.visibility = View.VISIBLE
 
-                if (!card.type.isMovieType()) {
+                if (card.type?.isMovieType() == false) {
                     cardText?.text =
                         cardText?.context?.getNameFull(card.name, card.episode, card.season)
                 }
             }
             is AnimeSearchResponse -> {
-                if (card.dubStatus != null && card.dubStatus.size > 0) {
-                    if (card.dubStatus.contains(DubStatus.Dubbed)) {
-                        textIsDub?.visibility = View.VISIBLE
+                val dubStatus = card.dubStatus
+                if (!dubStatus.isNullOrEmpty()) {
+                    if (dubStatus.contains(DubStatus.Dubbed)) {
+                        textIsDub?.isVisible = showDub
                     }
-                    if (card.dubStatus.contains(DubStatus.Subbed)) {
-                        textIsSub?.visibility = View.VISIBLE
+                    if (dubStatus.contains(DubStatus.Subbed)) {
+                        textIsSub?.isVisible = showSub
                     }
                 }
 
+                val dubEpisodes = card.episodes[DubStatus.Dubbed]
+                val subEpisodes = card.episodes[DubStatus.Subbed]
+
                 textIsDub?.apply {
                     val dubText = context.getString(R.string.app_dubbed_text)
-                    text = if (card.dubEpisodes != null && card.dubEpisodes > 0) {
+                    text = if (dubEpisodes != null && dubEpisodes > 0) {
                         context.getString(R.string.app_dub_sub_episode_text_format)
-                            .format(dubText, card.dubEpisodes)
+                            .format(dubText, dubEpisodes)
                     } else {
                         dubText
                     }
@@ -177,9 +240,9 @@ object SearchResultBuilder {
 
                 textIsSub?.apply {
                     val subText = context.getString(R.string.app_subbed_text)
-                    text = if (card.subEpisodes != null && card.subEpisodes > 0) {
+                    text = if (subEpisodes != null && subEpisodes > 0) {
                         context.getString(R.string.app_dub_sub_episode_text_format)
-                            .format(subText, card.subEpisodes)
+                            .format(subText, subEpisodes)
                     } else {
                         subText
                     }

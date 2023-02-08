@@ -4,8 +4,10 @@ import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.AcraApplication.Companion.getKey
 import com.lagradost.cloudstream3.AcraApplication.Companion.getKeys
 import com.lagradost.cloudstream3.AcraApplication.Companion.removeKey
+import com.lagradost.cloudstream3.AcraApplication.Companion.removeKeys
 import com.lagradost.cloudstream3.AcraApplication.Companion.setKey
 import com.lagradost.cloudstream3.DubStatus
+import com.lagradost.cloudstream3.SearchQuality
 import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.ui.WatchType
@@ -13,7 +15,9 @@ import com.lagradost.cloudstream3.ui.WatchType
 const val VIDEO_POS_DUR = "video_pos_dur"
 const val RESULT_WATCH_STATE = "result_watch_state"
 const val RESULT_WATCH_STATE_DATA = "result_watch_state_data"
-const val RESULT_RESUME_WATCHING = "result_resume_watching"
+const val RESULT_RESUME_WATCHING = "result_resume_watching_2" // changed due to id changes
+const val RESULT_RESUME_WATCHING_OLD = "result_resume_watching"
+const val RESULT_RESUME_WATCHING_HAS_MIGRATED = "result_resume_watching_migrated"
 const val RESULT_SEASON = "result_season"
 const val RESULT_DUB = "result_dub"
 
@@ -33,40 +37,56 @@ object DataStoreHelper {
     }
 
     data class BookmarkedData(
-       @JsonProperty("id") override val id: Int?,
-       @JsonProperty("bookmarkedTime") val bookmarkedTime: Long,
-       @JsonProperty("latestUpdatedTime") val latestUpdatedTime: Long,
-       @JsonProperty("name") override val name: String,
-       @JsonProperty("url") override val url: String,
-       @JsonProperty("apiName") override val apiName: String,
-       @JsonProperty("type") override val type: TvType,
-       @JsonProperty("posterUrl") override val posterUrl: String?,
-       @JsonProperty("year") val year: Int?,
+        @JsonProperty("id") override var id: Int?,
+        @JsonProperty("bookmarkedTime") val bookmarkedTime: Long,
+        @JsonProperty("latestUpdatedTime") val latestUpdatedTime: Long,
+        @JsonProperty("name") override val name: String,
+        @JsonProperty("url") override val url: String,
+        @JsonProperty("apiName") override val apiName: String,
+        @JsonProperty("type") override var type: TvType? = null,
+        @JsonProperty("posterUrl") override var posterUrl: String?,
+        @JsonProperty("year") val year: Int?,
+        @JsonProperty("quality") override var quality: SearchQuality? = null,
+        @JsonProperty("posterHeaders") override var posterHeaders: Map<String, String>? = null,
     ) : SearchResponse
 
     data class ResumeWatchingResult(
         @JsonProperty("name") override val name: String,
         @JsonProperty("url") override val url: String,
         @JsonProperty("apiName") override val apiName: String,
-        @JsonProperty("type") override val type: TvType,
-        @JsonProperty("posterUrl") override val posterUrl: String?,
+        @JsonProperty("type") override var type: TvType? = null,
+        @JsonProperty("posterUrl") override var posterUrl: String?,
 
         @JsonProperty("watchPos") val watchPos: PosDur?,
 
-        @JsonProperty("id") override val id: Int?,
+        @JsonProperty("id") override var id: Int?,
         @JsonProperty("parentId") val parentId: Int?,
         @JsonProperty("episode") val episode: Int?,
         @JsonProperty("season") val season: Int?,
         @JsonProperty("isFromDownload") val isFromDownload: Boolean,
+        @JsonProperty("quality") override var quality: SearchQuality? = null,
+        @JsonProperty("posterHeaders") override var posterHeaders: Map<String, String>? = null,
     ) : SearchResponse
 
-    var currentAccount: String = "0" //TODO ACCOUNT IMPLEMENTATION
+    private var currentAccount: String = "0" //TODO ACCOUNT IMPLEMENTATION
 
     fun getAllWatchStateIds(): List<Int>? {
         val folder = "$currentAccount/$RESULT_WATCH_STATE"
         return getKeys(folder)?.mapNotNull {
             it.removePrefix("$folder/").toIntOrNull()
         }
+    }
+
+    fun deleteAllResumeStateIds() {
+        val folder = "$currentAccount/$RESULT_RESUME_WATCHING"
+        removeKeys(folder)
+    }
+
+    fun deleteAllBookmarkedData() {
+        val folder1 = "$currentAccount/$RESULT_WATCH_STATE"
+        val folder2 = "$currentAccount/$RESULT_WATCH_STATE_DATA"
+        removeKeys(folder1)
+        removeKeys(folder2)
     }
 
     fun getAllResumeStateIds(): List<Int>? {
@@ -76,14 +96,41 @@ object DataStoreHelper {
         }
     }
 
+    private fun getAllResumeStateIdsOld(): List<Int>? {
+        val folder = "$currentAccount/$RESULT_RESUME_WATCHING_OLD"
+        return getKeys(folder)?.mapNotNull {
+            it.removePrefix("$folder/").toIntOrNull()
+        }
+    }
+
+    fun migrateResumeWatching() {
+        // if (getKey(RESULT_RESUME_WATCHING_HAS_MIGRATED, false) != true) {
+        setKey(RESULT_RESUME_WATCHING_HAS_MIGRATED, true)
+        getAllResumeStateIdsOld()?.forEach { id ->
+            getLastWatchedOld(id)?.let {
+                setLastWatched(
+                    it.parentId,
+                    null,
+                    it.episode,
+                    it.season,
+                    it.isFromDownload,
+                    it.updateTime
+                )
+                removeLastWatchedOld(it.parentId)
+            }
+        }
+        //}
+    }
+
     fun setLastWatched(
         parentId: Int?,
         episodeId: Int?,
         episode: Int?,
         season: Int?,
-        isFromDownload: Boolean = false
+        isFromDownload: Boolean = false,
+        updateTime: Long? = null,
     ) {
-        if (parentId == null || episodeId == null) return
+        if (parentId == null) return
         setKey(
             "$currentAccount/$RESULT_RESUME_WATCHING",
             parentId.toString(),
@@ -92,10 +139,15 @@ object DataStoreHelper {
                 episodeId,
                 episode,
                 season,
-                System.currentTimeMillis(),
+                updateTime ?: System.currentTimeMillis(),
                 isFromDownload
             )
         )
+    }
+
+    private fun removeLastWatchedOld(parentId: Int?) {
+        if (parentId == null) return
+        removeKey("$currentAccount/$RESULT_RESUME_WATCHING_OLD", parentId.toString())
     }
 
     fun removeLastWatched(parentId: Int?) {
@@ -107,6 +159,14 @@ object DataStoreHelper {
         if (id == null) return null
         return getKey(
             "$currentAccount/$RESULT_RESUME_WATCHING",
+            id.toString(),
+        )
+    }
+
+    fun getLastWatchedOld(id: Int?): VideoDownloadHelper.ResumeWatching? {
+        if (id == null) return null
+        return getKey(
+            "$currentAccount/$RESULT_RESUME_WATCHING_OLD",
             id.toString(),
         )
     }
