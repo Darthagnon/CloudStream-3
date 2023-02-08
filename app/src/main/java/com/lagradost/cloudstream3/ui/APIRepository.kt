@@ -13,13 +13,15 @@ class APIRepository(val api: MainAPI) {
         val noneApi = object : MainAPI() {
             override var name = "None"
             override val supportedTypes = emptySet<TvType>()
+            override var lang = ""
         }
         val randomApi = object : MainAPI() {
             override var name = "Random"
             override val supportedTypes = emptySet<TvType>()
+            override var lang = ""
         }
 
-        fun isInvalidData(data : String): Boolean {
+        fun isInvalidData(data: String): Boolean {
             return data.isEmpty() || data == "[]" || data == "about:blank"
         }
     }
@@ -27,12 +29,12 @@ class APIRepository(val api: MainAPI) {
     val hasMainPage = api.hasMainPage
     val name = api.name
     val mainUrl = api.mainUrl
+    val mainPage = api.mainPage
     val hasQuickSearch = api.hasQuickSearch
 
     suspend fun load(url: String): Resource<LoadResponse> {
-        if(isInvalidData(url)) throw ErrorLoadingException()
-
         return safeApiCall {
+            if (isInvalidData(url)) throw ErrorLoadingException()
             api.load(api.fixUrl(url)) ?: throw ErrorLoadingException()
         }
     }
@@ -58,9 +60,19 @@ class APIRepository(val api: MainAPI) {
         }
     }
 
-    suspend fun getMainPage(): Resource<HomePageResponse?> {
+    suspend fun getMainPage(page: Int, nameIndex: Int? = null): Resource<List<HomePageResponse?>> {
         return safeApiCall {
-            api.getMainPage() ?: throw ErrorLoadingException()
+            nameIndex?.let { api.mainPage.getOrNull(it) }?.let { data ->
+                listOf(api.getMainPage(page, MainPageRequest(data.name, data.data)))
+            } ?: api.mainPage.apmap { data ->
+                api.getMainPage(page, MainPageRequest(data.name, data.data))
+            }
+        }
+    }
+
+    suspend fun extractorVerifierJob(extractorData: String?) {
+        safeApiCall {
+            api.extractorVerifierJob(extractorData)
         }
     }
 

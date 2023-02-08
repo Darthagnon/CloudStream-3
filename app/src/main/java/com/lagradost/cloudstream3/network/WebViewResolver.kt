@@ -8,6 +8,7 @@ import com.lagradost.cloudstream3.USER_AGENT
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.mvvm.logError
 import com.lagradost.cloudstream3.utils.Coroutines.main
+import com.lagradost.nicehttp.requestCreator
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import okhttp3.Interceptor
@@ -30,6 +31,17 @@ class WebViewResolver(val interceptUrl: Regex, val additionalUrls: List<Regex> =
             val fixedRequest = resolveUsingWebView(request).first
             return@runBlocking chain.proceed(fixedRequest ?: request)
         }
+    }
+
+    suspend fun resolveUsingWebView(
+        url: String,
+        referer: String? = null,
+        method: String = "GET",
+        requestCallBack: (Request) -> Boolean = { false },
+    ) : Pair<Request?, List<Request>> {
+        return resolveUsingWebView(
+            requestCreator(method, url, referer = referer), requestCallBack
+        )
     }
 
     /**
@@ -155,12 +167,12 @@ class WebViewResolver(val interceptUrl: Regex, val additionalUrls: List<Regex> =
                                 request.method == "GET" -> app.get(
                                     webViewUrl,
                                     headers = request.requestHeaders
-                                ).response.toWebResourceResponse()
+                                ).okhttpResponse.toWebResourceResponse()
 
                                 request.method == "POST" -> app.post(
                                     webViewUrl,
                                     headers = request.requestHeaders
-                                ).response.toWebResourceResponse()
+                                ).okhttpResponse.toWebResourceResponse()
                                 else -> return@runBlocking super.shouldInterceptRequest(
                                     view,
                                     request
@@ -206,28 +218,11 @@ class WebViewResolver(val interceptUrl: Regex, val additionalUrls: List<Regex> =
     fun WebResourceRequest.toRequest(): Request {
         val webViewUrl = this.url.toString()
 
-        return when (this.method) {
-            "POST" -> postRequestCreator(
-                webViewUrl,
-                this.requestHeaders,
-                null,
-                emptyMap(),
-                emptyMap(),
-                emptyMap<String, String>(),
-                10,
-                TimeUnit.MINUTES
-            )
-//            "GET",
-            else -> getRequestCreator(
-                webViewUrl,
-                this.requestHeaders,
-                null,
-                emptyMap(),
-                emptyMap(),
-                10,
-                TimeUnit.MINUTES
-            )
-        }
+        return requestCreator(
+            this.method,
+            webViewUrl,
+            this.requestHeaders,
+        )
     }
 
     fun Response.toWebResourceResponse(): WebResourceResponse {

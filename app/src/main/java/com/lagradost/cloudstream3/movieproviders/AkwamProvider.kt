@@ -2,13 +2,12 @@ package com.lagradost.cloudstream3.movieproviders
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
-import com.lagradost.cloudstream3.network.AppResponse
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.Qualities
 import org.jsoup.nodes.Element
 
 class AkwamProvider : MainAPI() {
-    override val lang = "ar"
+    override var lang = "ar"
     override var mainUrl = "https://akwam.to"
     override var name = "Akwam"
     override val usesWebView = false
@@ -16,12 +15,12 @@ class AkwamProvider : MainAPI() {
     override val supportedTypes = setOf(TvType.TvSeries, TvType.Movie, TvType.Anime, TvType.Cartoon)
 
     private fun Element.toSearchResponse(): SearchResponse? {
-        val url = select("a.box")?.attr("href") ?: return null
+        val url = select("a.box").attr("href") ?: return null
         if (url.contains("/games/") || url.contains("/programs/")) return null
         val poster = select("picture > img")
         val title = poster.attr("alt")
         val posterUrl = poster.attr("data-src")
-        val year = select(".badge-secondary")?.text()?.toIntOrNull()
+        val year = select(".badge-secondary").text().toIntOrNull()
 
         // If you need to differentiate use the url.
         return MovieSearchResponse(
@@ -35,7 +34,7 @@ class AkwamProvider : MainAPI() {
         )
     }
 
-    override suspend fun getMainPage(): HomePageResponse {
+    override suspend fun getMainPage(page: Int, request : MainPageRequest): HomePageResponse {
         // Title, Url
         val moviesUrl = listOf(
             "Movies" to "$mainUrl/movies",
@@ -64,20 +63,18 @@ class AkwamProvider : MainAPI() {
         return Regex("""\d+""").find(this)?.groupValues?.firstOrNull()?.toIntOrNull()
     }
 
-    private fun Element.toTvSeriesEpisode(): TvSeriesEpisode {
+    private fun Element.toEpisode(): Episode {
         val a = select("a.text-white")
         val url = a.attr("href")
         val title = a.text()
         val thumbUrl = select("picture > img").attr("src")
         val date = select("p.entry-date").text()
-        return TvSeriesEpisode(
-            title,
-            null,
-            title.getIntFromText(),
-            url,
-            thumbUrl,
-            date
-        )
+        return newEpisode(url) {
+            name = title
+            episode = title.getIntFromText()
+            posterUrl = thumbUrl
+            addDate(date)
+        }
     }
 
 
@@ -100,22 +97,20 @@ class AkwamProvider : MainAPI() {
 
         val synopsis = doc.select("div.widget-body p:first-child").text()
 
-        val rating = doc.select("span.mx-2").text().split("/").lastOrNull()?.replace(" ", "")
-            ?.toDoubleOrNull()
-            ?.times(1000)?.toInt()
+        val rating = doc.select("span.mx-2").text().split("/").lastOrNull()?.toRatingInt()
 
         val tags = doc.select("div.font-size-16.d-flex.align-items-center.mt-3 > a").map {
             it.text()
         }
 
-        val actors = doc.select("div.widget-body > div > div.entry-box > a")?.mapNotNull {
+        val actors = doc.select("div.widget-body > div > div.entry-box > a").mapNotNull {
             val name = it?.selectFirst("div > .entry-title")?.text() ?: return@mapNotNull null
             val image = it.selectFirst("div > img")?.attr("src") ?: return@mapNotNull null
             Actor(name, image)
         }
 
         val recommendations =
-            doc.select("div > div.widget-body > div.row > div > div.entry-box")?.mapNotNull {
+            doc.select("div > div.widget-body > div.row > div > div.entry-box").mapNotNull {
                 val recTitle = it?.selectFirst("div.entry-body > .entry-title > .text-white")
                     ?: return@mapNotNull null
                 val href = recTitle.attr("href") ?: return@mapNotNull null
@@ -143,9 +138,9 @@ class AkwamProvider : MainAPI() {
             }
         } else {
             val episodes = doc.select("div.bg-primary2.p-4.col-lg-4.col-md-6.col-12").map {
-                it.toTvSeriesEpisode()
+                it.toEpisode()
             }.let {
-                val isReversed = it.lastOrNull()?.episode ?: 1 < it.firstOrNull()?.episode ?: 0
+                val isReversed = (it.lastOrNull()?.episode ?: 1) < (it.firstOrNull()?.episode ?: 0)
                 if (isReversed)
                     it.reversed()
                 else it
@@ -165,10 +160,10 @@ class AkwamProvider : MainAPI() {
     }
 
 
-    // Maybe possible to not use the url shortener but cba investigating that.
-    private suspend fun skipUrlShortener(url: String): AppResponse {
-        return app.get(app.get(url).document.select("a.download-link").attr("href"))
-    }
+//    // Maybe possible to not use the url shortener but cba investigating that.
+//    private suspend fun skipUrlShortener(url: String): AppResponse {
+//        return app.get(app.get(url).document.select("a.download-link").attr("href"))
+//    }
 
     private fun getQualityFromId(id: Int?): Qualities {
         return when (id) {
@@ -188,23 +183,36 @@ class AkwamProvider : MainAPI() {
     ): Boolean {
         val doc = app.get(data).document
 
-        val links = doc.select("div.tab-content.quality").map {
-            val quality = getQualityFromId(it.attr("id").getIntFromText())
-            it.select(".col-lg-6 > a").map { linkElement ->
-                linkElement.attr("href") to quality
-                // Only uses the download links, primarily to prevent unnecessary duplicate requests.
-            }.filter { link -> link.first.contains("/link/") }
+        val links = doc.select("div.tab-content.quality").map { element ->
+            val quality = getQualityFromId(element.attr("id").getIntFromText())
+            element.select(".col-lg-6 > a:contains(تحميل)").map { linkElement ->
+                if (linkElement.attr("href").contains("/download/")) {
+                    Pair(
+                        linkElement.attr("href"),
+                        quality,
+                    )
+                } else {
+                    val url = "$mainUrl/download${
+                        linkElement.attr("href").split("/link")[1]
+                    }${data.split("/movie|/episode|/show/episode".toRegex())[1]}"
+                    Pair(
+                        url,
+                        quality,
+                    )
+                    // just in case if they add the shorts urls again
+                }
+            }
         }.flatten()
 
         links.map {
-            val linkDoc = skipUrlShortener(it.first).document
+            val linkDoc = app.get(it.first).document
             val button = linkDoc.select("div.btn-loader > a")
             val url = button.attr("href")
 
             callback.invoke(
                 ExtractorLink(
                     this.name,
-                    this.name + " - ${it.second.name.replace("P", "")}p",
+                    this.name,
                     url,
                     this.mainUrl,
                     it.second.value

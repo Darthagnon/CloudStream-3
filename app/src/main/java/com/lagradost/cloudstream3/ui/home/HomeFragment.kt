@@ -3,6 +3,7 @@ package com.lagradost.cloudstream3.ui.home
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Context
+import android.content.DialogInterface
 import android.content.Intent
 import android.content.res.Configuration
 import android.net.Uri
@@ -11,11 +12,14 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.*
+import androidx.appcompat.app.AlertDialog
+import androidx.appcompat.widget.SearchView
+import androidx.core.view.isGone
 import androidx.core.view.isVisible
 import androidx.core.widget.NestedScrollView
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.activityViewModels
-import androidx.recyclerview.widget.GridLayoutManager
+import androidx.preference.PreferenceManager
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.LinearSnapHelper
 import androidx.recyclerview.widget.RecyclerView
@@ -25,31 +29,38 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.APIHolder.apis
 import com.lagradost.cloudstream3.APIHolder.filterProviderByPreferredMedia
 import com.lagradost.cloudstream3.APIHolder.getApiFromNameNull
+import com.lagradost.cloudstream3.APIHolder.getApiProviderLangSettings
 import com.lagradost.cloudstream3.AcraApplication.Companion.getKey
 import com.lagradost.cloudstream3.AcraApplication.Companion.setKey
 import com.lagradost.cloudstream3.mvvm.Resource
 import com.lagradost.cloudstream3.mvvm.logError
 import com.lagradost.cloudstream3.mvvm.observe
-import com.lagradost.cloudstream3.syncproviders.OAuth2API
+import com.lagradost.cloudstream3.syncproviders.AccountManager.Companion.OAuth2Apis
 import com.lagradost.cloudstream3.ui.APIRepository.Companion.noneApi
 import com.lagradost.cloudstream3.ui.APIRepository.Companion.randomApi
 import com.lagradost.cloudstream3.ui.AutofitRecyclerView
 import com.lagradost.cloudstream3.ui.WatchType
+import com.lagradost.cloudstream3.ui.quicksearch.QuickSearchFragment
 import com.lagradost.cloudstream3.ui.result.START_ACTION_RESUME_LATEST
 import com.lagradost.cloudstream3.ui.search.*
-import com.lagradost.cloudstream3.ui.search.SearchFragment.Companion.filterSearchResponse
 import com.lagradost.cloudstream3.ui.search.SearchHelper.handleSearchClickCallback
 import com.lagradost.cloudstream3.ui.settings.SettingsFragment.Companion.isTrueTvSettings
 import com.lagradost.cloudstream3.ui.settings.SettingsFragment.Companion.isTvSettings
+import com.lagradost.cloudstream3.utils.AppUtils.isRecyclerScrollable
 import com.lagradost.cloudstream3.utils.AppUtils.loadSearchResult
+import com.lagradost.cloudstream3.utils.AppUtils.setMaxViewPoolSize
+import com.lagradost.cloudstream3.utils.Coroutines.ioSafe
 import com.lagradost.cloudstream3.utils.DataStore.getKey
 import com.lagradost.cloudstream3.utils.DataStore.setKey
 import com.lagradost.cloudstream3.utils.DataStoreHelper
+import com.lagradost.cloudstream3.utils.DataStoreHelper.deleteAllBookmarkedData
+import com.lagradost.cloudstream3.utils.DataStoreHelper.deleteAllResumeStateIds
 import com.lagradost.cloudstream3.utils.DataStoreHelper.removeLastWatched
 import com.lagradost.cloudstream3.utils.DataStoreHelper.setResultWatchState
 import com.lagradost.cloudstream3.utils.Event
 import com.lagradost.cloudstream3.utils.HOMEPAGE_API
 import com.lagradost.cloudstream3.utils.SingleSelectionHelper.showOptionSelectStringRes
+import com.lagradost.cloudstream3.utils.SubtitleHelper.getFlagFromIso
 import com.lagradost.cloudstream3.utils.UIHelper.dismissSafe
 import com.lagradost.cloudstream3.utils.UIHelper.fixPaddingStatusbar
 import com.lagradost.cloudstream3.utils.UIHelper.fixPaddingStatusbarView
@@ -60,10 +71,8 @@ import com.lagradost.cloudstream3.utils.UIHelper.setImageBlur
 import com.lagradost.cloudstream3.widget.CenterZoomLayoutManager
 import kotlinx.android.synthetic.main.fragment_home.*
 import kotlinx.android.synthetic.main.fragment_home.home_api_fab
-import kotlinx.android.synthetic.main.fragment_home.home_bookmarked_child_more_info
 import kotlinx.android.synthetic.main.fragment_home.home_bookmarked_child_recyclerview
 import kotlinx.android.synthetic.main.fragment_home.home_bookmarked_holder
-import kotlinx.android.synthetic.main.fragment_home.home_change_api
 import kotlinx.android.synthetic.main.fragment_home.home_change_api_loading
 import kotlinx.android.synthetic.main.fragment_home.home_loaded
 import kotlinx.android.synthetic.main.fragment_home.home_loading
@@ -82,12 +91,12 @@ import kotlinx.android.synthetic.main.fragment_home.home_type_completed_btt
 import kotlinx.android.synthetic.main.fragment_home.home_type_dropped_btt
 import kotlinx.android.synthetic.main.fragment_home.home_type_on_hold_btt
 import kotlinx.android.synthetic.main.fragment_home.home_type_watching_btt
-import kotlinx.android.synthetic.main.fragment_home.home_watch_child_more_info
 import kotlinx.android.synthetic.main.fragment_home.home_watch_child_recyclerview
 import kotlinx.android.synthetic.main.fragment_home.home_watch_holder
 import kotlinx.android.synthetic.main.fragment_home.home_watch_parent_item_title
 import kotlinx.android.synthetic.main.fragment_home.result_error_text
 import kotlinx.android.synthetic.main.fragment_home_tv.*
+import kotlinx.android.synthetic.main.home_episodes_expanded.*
 import java.util.*
 
 const val HOME_BOOKMARK_VALUE_LIST = "home_bookmarked_last_list"
@@ -97,21 +106,87 @@ class HomeFragment : Fragment() {
     companion object {
         val configEvent = Event<Int>()
         var currentSpan = 1
+        val listHomepageItems = mutableListOf<SearchResponse>()
 
-        fun Activity.loadHomepageList(item: HomePageList) {
+        private val errorProfilePics = listOf(
+            R.drawable.monke_benene,
+            R.drawable.monke_burrito,
+            R.drawable.monke_coco,
+            R.drawable.monke_cookie,
+            R.drawable.monke_flusdered,
+            R.drawable.monke_funny,
+            R.drawable.monke_like,
+            R.drawable.monke_party,
+            R.drawable.monke_sob,
+            R.drawable.monke_drink,
+        )
+
+        val errorProfilePic = errorProfilePics.random()
+
+        fun Activity.loadHomepageList(
+            item: HomePageList,
+            deleteCallback: (() -> Unit)? = null,
+        ) {
+            loadHomepageList(
+                expand = HomeViewModel.ExpandableHomepageList(item, 1, false),
+                deleteCallback = deleteCallback,
+                expandCallback = null
+            )
+        }
+
+        fun Activity.loadHomepageList(
+            expand: HomeViewModel.ExpandableHomepageList,
+            deleteCallback: (() -> Unit)? = null,
+            expandCallback: (suspend (String) -> HomeViewModel.ExpandableHomepageList?)? = null
+        ) {
             val context = this
             val bottomSheetDialogBuilder = BottomSheetDialog(context)
             bottomSheetDialogBuilder.setContentView(R.layout.home_episodes_expanded)
             val title = bottomSheetDialogBuilder.findViewById<TextView>(R.id.home_expanded_text)!!
+            val item = expand.list
             title.text = item.name
             val recycle =
                 bottomSheetDialogBuilder.findViewById<AutofitRecyclerView>(R.id.home_expanded_recycler)!!
             val titleHolder =
                 bottomSheetDialogBuilder.findViewById<FrameLayout>(R.id.home_expanded_drag_down)!!
 
+            val delete = bottomSheetDialogBuilder.home_expanded_delete
+            delete.isGone = deleteCallback == null
+            if (deleteCallback != null) {
+                delete.setOnClickListener {
+                    try {
+                        val builder: AlertDialog.Builder = AlertDialog.Builder(context)
+                        val dialogClickListener =
+                            DialogInterface.OnClickListener { _, which ->
+                                when (which) {
+                                    DialogInterface.BUTTON_POSITIVE -> {
+                                        deleteCallback.invoke()
+                                        bottomSheetDialogBuilder.dismissSafe(this)
+                                    }
+                                    DialogInterface.BUTTON_NEGATIVE -> {}
+                                }
+                            }
+
+                        builder.setTitle(R.string.delete_file)
+                            .setMessage(
+                                context.getString(R.string.delete_message).format(
+                                    item.name
+                                )
+                            )
+                            .setPositiveButton(R.string.delete, dialogClickListener)
+                            .setNegativeButton(R.string.cancel, dialogClickListener)
+                            .show()
+                    } catch (e: Exception) {
+                        logError(e)
+                        // ye you somehow fucked up formatting did you?
+                    }
+                }
+            }
+
             titleHolder.setOnClickListener {
                 bottomSheetDialogBuilder.dismissSafe(this)
             }
+
 
             // Span settings
             recycle.spanCount = currentSpan
@@ -121,7 +196,36 @@ class HomeFragment : Fragment() {
                 if (callback.action == SEARCH_ACTION_LOAD || callback.action == SEARCH_ACTION_PLAY_FILE) {
                     bottomSheetDialogBuilder.dismissSafe(this)
                 }
+            }.apply {
+                hasNext = expand.hasNext
             }
+
+            recycle.addOnScrollListener(object : RecyclerView.OnScrollListener() {
+                var expandCount = 0
+                val name = expand.list.name
+
+                override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
+                    super.onScrollStateChanged(recyclerView, newState)
+
+                    val adapter = recyclerView.adapter
+                    if (adapter !is SearchAdapter) return
+
+                    val count = adapter.itemCount
+                    val currentHasNext = adapter.hasNext
+                    //!recyclerView.canScrollVertically(1)
+                    if (!recyclerView.isRecyclerScrollable() && currentHasNext && expandCount != count) {
+                        expandCount = count
+                        ioSafe {
+                            expandCallback?.invoke(name)?.let { newExpand ->
+                                (recyclerView.adapter as? SearchAdapter?)?.apply {
+                                    hasNext = newExpand.hasNext
+                                    updateList(newExpand.list.list)
+                                }
+                            }
+                        }
+                    }
+                }
+            })
 
             val spanListener = { span: Int ->
                 recycle.spanCount = span
@@ -144,14 +248,18 @@ class HomeFragment : Fragment() {
             cartoons: MaterialButton?,
             tvs: MaterialButton?,
             docs: MaterialButton?,
-            movies: MaterialButton?
+            movies: MaterialButton?,
+            asian: MaterialButton?,
+            livestream: MaterialButton?,
         ): List<Pair<MaterialButton?, List<TvType>>> {
             return listOf(
                 Pair(anime, listOf(TvType.Anime, TvType.OVA, TvType.AnimeMovie)),
                 Pair(cartoons, listOf(TvType.Cartoon)),
                 Pair(tvs, listOf(TvType.TvSeries)),
                 Pair(docs, listOf(TvType.Documentary)),
-                Pair(movies, listOf(TvType.Movie, TvType.Torrent))
+                Pair(movies, listOf(TvType.Movie, TvType.Torrent)),
+                Pair(asian, listOf(TvType.AsianDrama)),
+                Pair(livestream, listOf(TvType.Live)),
             )
         }
 
@@ -168,6 +276,7 @@ class HomeFragment : Fragment() {
             builder.setContentView(R.layout.home_select_mainpage)
             builder.show()
             builder.let { dialog ->
+                val isMultiLang = getApiProviderLangSettings().size > 1
                 //dialog.window?.setGravity(Gravity.BOTTOM)
 
                 var currentApiName = selectedApiName
@@ -183,10 +292,12 @@ class HomeFragment : Fragment() {
                 val tvs = dialog.findViewById<MaterialButton>(R.id.home_select_tv_series)
                 val docs = dialog.findViewById<MaterialButton>(R.id.home_select_documentaries)
                 val movies = dialog.findViewById<MaterialButton>(R.id.home_select_movies)
+                val asian = dialog.findViewById<MaterialButton>(R.id.home_select_asian)
+                val livestream = dialog.findViewById<MaterialButton>(R.id.home_select_livestreams)
                 val cancelBtt = dialog.findViewById<MaterialButton>(R.id.cancel_btt)
                 val applyBtt = dialog.findViewById<MaterialButton>(R.id.apply_btt)
 
-                val pairList = getPairList(anime, cartoons, tvs, docs, movies)
+                val pairList = getPairList(anime, cartoons, tvs, docs, movies, asian, livestream)
 
                 cancelBtt?.setOnClickListener {
                     dialog.dismissSafe()
@@ -205,7 +316,7 @@ class HomeFragment : Fragment() {
                 listView?.choiceMode = AbsListView.CHOICE_MODE_SINGLE
 
                 listView?.setOnItemClickListener { _, _, i, _ ->
-                    if (!currentValidApis.isNullOrEmpty()) {
+                    if (currentValidApis.isNotEmpty()) {
                         currentApiName = currentValidApis[i].name
                         //to switch to apply simply remove this
                         currentApiName?.let(callback)
@@ -221,13 +332,13 @@ class HomeFragment : Fragment() {
                         api.hasMainPage && api.supportedTypes.any {
                             preSelectedTypes.contains(it)
                         }
-                    }.sortedBy { it.name }.toMutableList()
+                    }.sortedBy { it.name.lowercase() }.toMutableList()
                     currentValidApis.addAll(0, validAPIs.subList(0, 2))
 
-                    val names = currentValidApis.map { it.name }
-                    val index = names.indexOf(currentApiName)
+                    val names =
+                        currentValidApis.map { if (isMultiLang) "${getFlagFromIso(it.lang)?.plus(" ") ?: ""}${it.name}" else it.name }
+                    val index = currentValidApis.map { it.name }.indexOf(currentApiName)
                     listView?.setItemChecked(index, true)
-                    arrayAdapter.notifyDataSetChanged()
                     arrayAdapter.addAll(names)
                     arrayAdapter.notifyDataSetChanged()
                 }
@@ -283,8 +394,6 @@ class HomeFragment : Fragment() {
             if (context?.isTvSettings() == true) R.layout.fragment_home_tv else R.layout.fragment_home
         return inflater.inflate(layout, container, false)
     }
-
-    private var currentHomePage: HomePageResponse? = null
 
     private fun toggleMainVisibility(visible: Boolean) {
         home_main_holder?.isVisible = visible
@@ -355,6 +464,7 @@ class HomeFragment : Fragment() {
     }
 
     private var currentApiName: String? = null
+    private var toggleRandomButton = false
 
     @SuppressLint("SetTextI18n")
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
@@ -364,11 +474,33 @@ class HomeFragment : Fragment() {
         home_change_api?.setOnClickListener(apiChangeClickListener)
         home_change_api_loading?.setOnClickListener(apiChangeClickListener)
         home_api_fab?.setOnClickListener(apiChangeClickListener)
+        home_random?.setOnClickListener {
+            if (listHomepageItems.isNotEmpty()) {
+                activity.loadSearchResult(listHomepageItems.random())
+            }
+        }
+
+        //Disable Random button, if its toggled off on settings
+        context?.let {
+            val settingsManager = PreferenceManager.getDefaultSharedPreferences(it)
+            toggleRandomButton =
+                settingsManager.getBoolean(getString(R.string.random_button_key), false)
+            home_random?.isVisible = toggleRandomButton
+            if (!toggleRandomButton) {
+                home_random?.visibility = View.GONE
+            }
+        }
 
         observe(homeViewModel.apiName) { apiName ->
             currentApiName = apiName
             setKey(HOMEPAGE_API, apiName)
+            home_api_fab?.text = apiName
             home_provider_name?.text = apiName
+            try {
+                home_search?.queryHint = getString(R.string.search_hint_site).format(apiName)
+            } catch (e: Exception) {
+                logError(e)
+            }
             home_provider_meta_info?.isVisible = false
 
             getApiFromNameNull(apiName)?.let { currentApi ->
@@ -379,6 +511,7 @@ class HomeFragment : Fragment() {
                     Pair(R.string.cartoons, listOf(TvType.Cartoon)),
                     Pair(R.string.anime, listOf(TvType.Anime, TvType.OVA, TvType.AnimeMovie)),
                     Pair(R.string.torrent, listOf(TvType.Torrent)),
+                    Pair(R.string.asian_drama, listOf(TvType.AsianDrama)),
                 ).filter { item -> currentApi.supportedTypes.any { type -> item.second.contains(type) } }
                 home_provider_meta_info?.text =
                     typeChoices.joinToString(separator = ", ") { getString(it.first) }
@@ -431,27 +564,41 @@ class HomeFragment : Fragment() {
             }
         }
 
+        home_search?.setOnQueryTextListener(object : SearchView.OnQueryTextListener {
+            override fun onQueryTextSubmit(query: String): Boolean {
+                QuickSearchFragment.pushSearch(activity, query, currentApiName?.let { arrayOf(it) })
+
+                return true
+            }
+
+            override fun onQueryTextChange(newText: String): Boolean {
+                //searchViewModel.quickSearch(newText)
+                return true
+            }
+        })
+
         observe(homeViewModel.page) { data ->
             when (data) {
                 is Resource.Success -> {
                     home_loading_shimmer?.stopShimmer()
 
                     val d = data.value
+                    listHomepageItems.clear()
 
-                    currentHomePage = d
+                    // println("ITEMCOUNT: ${d.values.size} ${home_master_recycler?.adapter?.itemCount}")
                     (home_master_recycler?.adapter as? ParentItemAdapter?)?.updateList(
-                        d?.items?.mapNotNull {
-                            try {
-                                HomePageList(it.name, it.list.filterSearchResponse())
-                            } catch (e: Exception) {
-                                logError(e)
-                                null
-                            }
-                        } ?: listOf())
+                        d.values.toMutableList(),
+                        home_master_recycler
+                    )
 
                     home_loading?.isVisible = false
                     home_loading_error?.isVisible = false
                     home_loaded?.isVisible = true
+                    if (toggleRandomButton) {
+                        home_random?.isVisible = listHomepageItems.isNotEmpty()
+                    } else {
+                        home_random?.isGone = true
+                    }
                 }
                 is Resource.Failure -> {
                     home_loading_shimmer?.stopShimmer()
@@ -492,13 +639,6 @@ class HomeFragment : Fragment() {
                 }
             }
         }
-
-        val adapter: RecyclerView.Adapter<RecyclerView.ViewHolder> =
-            ParentItemAdapter(mutableListOf(), { callback ->
-                homeHandleSearch(callback)
-            }, { item ->
-                activity?.loadHomepageList(item)
-            })
 
         val toggleList = listOf(
             Pair(home_type_watching_btt, WatchType.WATCHING),
@@ -571,7 +711,10 @@ class HomeFragment : Fragment() {
                         getString(R.string.error_bookmarks_text), //home_bookmarked_parent_item_title?.text?.toString() ?: getString(R.string.error_bookmarks_text),
                         bookmarks
                     )
-                )
+                ) {
+                    deleteAllBookmarkedData()
+                    homeViewModel.loadStoredData(null)
+                }
             }
         }
 
@@ -594,7 +737,10 @@ class HomeFragment : Fragment() {
                             ?: getString(R.string.continue_watching),
                         resumeWatching
                     )
-                )
+                ) {
+                    deleteAllResumeStateIds()
+                    homeViewModel.loadResumeWatching()
+                }
             }
         }
 
@@ -745,9 +891,22 @@ class HomeFragment : Fragment() {
         context?.fixPaddingStatusbarView(home_statusbar)
         context?.fixPaddingStatusbar(home_loading_statusbar)
 
-
-        home_master_recycler.adapter = adapter
-        home_master_recycler.layoutManager = GridLayoutManager(context, 1)
+        home_master_recycler.adapter =
+            ParentItemAdapter(mutableListOf(), { callback ->
+                homeHandleSearch(callback)
+            }, { item ->
+                activity?.loadHomepageList(item, expandCallback = {
+                    homeViewModel.expandAndReturn(it)
+                })
+            }, { name ->
+                homeViewModel.expand(name)
+            })
+        home_master_recycler?.setMaxViewPoolSize(0, Int.MAX_VALUE)
+        home_master_recycler.layoutManager = object : LinearLayoutManager(context) {
+            override fun supportsPredictiveItemAnimations(): Boolean {
+                return false
+            }
+        } // GridLayoutManager(context, 1).also { it.supportsPredictiveItemAnimations() }
 
         if (context?.isTvSettings() == false) {
             LinearSnapHelper().attachToRecyclerView(home_main_poster_recyclerview) // snap
@@ -766,7 +925,7 @@ class HomeFragment : Fragment() {
 
                     home_main_text?.text =
                         random.name + if (random is AnimeSearchResponse && !random.dubStatus.isNullOrEmpty()) {
-                            random.dubStatus.joinToString(
+                            random.dubStatus?.joinToString(
                                 prefix = " • ",
                                 separator = " | "
                             ) { it.name }
@@ -787,9 +946,11 @@ class HomeFragment : Fragment() {
             val dy = scrollY - oldScrollY
             if (dy > 0) { //check for scroll down
                 home_api_fab?.shrink() // hide
+                home_random?.shrink()
             } else if (dy < -5) {
                 if (view?.context?.isTvSettings() == false) {
                     home_api_fab?.extend() // show
+                    home_random?.extend()
                 }
             }
         })
@@ -801,7 +962,7 @@ class HomeFragment : Fragment() {
             if (ctx.isTvSettings()) {
                 home_api_fab?.isVisible = false
                 home_change_api?.isVisible = true
-                if(ctx.isTrueTvSettings()) {
+                if (ctx.isTrueTvSettings()) {
                     home_change_api_loading?.isVisible = true
                     home_change_api_loading?.isFocusable = true
                     home_change_api_loading?.isFocusableInTouchMode = true
@@ -816,12 +977,15 @@ class HomeFragment : Fragment() {
                 home_change_api_loading?.isVisible = false
             }
 
-            for (syncApi in OAuth2API.OAuth2Apis) {
+            for (syncApi in OAuth2Apis) {
                 val login = syncApi.loginInfo()
                 val pic = login?.profilePicture
-                if (pic != null) {
-                    home_profile_picture.setImage(pic)
-                    home_profile_picture_holder.isVisible = true
+                if (home_profile_picture?.setImage(
+                        pic,
+                        errorImageDrawable = errorProfilePic
+                    ) == true
+                ) {
+                    home_profile_picture_holder?.isVisible = true
                     break
                 }
             }

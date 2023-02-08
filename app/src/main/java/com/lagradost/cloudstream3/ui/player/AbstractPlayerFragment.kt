@@ -40,6 +40,7 @@ import com.lagradost.cloudstream3.utils.AppUtils
 import com.lagradost.cloudstream3.utils.AppUtils.requestLocalAudioFocus
 import com.lagradost.cloudstream3.utils.UIHelper
 import com.lagradost.cloudstream3.utils.UIHelper.hideSystemUI
+import com.lagradost.cloudstream3.utils.UIHelper.popCurrentPage
 import kotlinx.android.synthetic.main.fragment_player.*
 import kotlinx.android.synthetic.main.player_custom_layout.*
 
@@ -56,7 +57,10 @@ const val SKIP_OP_VIDEO_PERCENTAGE = 50
 const val PRELOAD_NEXT_EPISODE_PERCENTAGE = 80
 
 // when the player should mark the episode as watched and resume watching the next
-const val NEXT_WATCH_EPISODE_PERCENTAGE = 95
+const val NEXT_WATCH_EPISODE_PERCENTAGE = 90
+
+// when the player should sync the progress of "watched", TODO MAKE SETTING
+const val UPDATE_SYNC_PROGRESS_PERCENTAGE = 80
 
 abstract class AbstractPlayerFragment(
     val player: IPlayer = CS3IPlayer()
@@ -65,6 +69,8 @@ abstract class AbstractPlayerFragment(
     var subStyle: SaveCaptionStyle? = null
     var subView: SubtitleView? = null
     var isBuffering = true
+    protected open var hasPipModeSupport = true
+
 
     @LayoutRes
     protected var layout: Int = R.layout.fragment_player
@@ -86,6 +92,14 @@ abstract class AbstractPlayerFragment(
     }
 
     open fun subtitlesChanged() {
+        throw NotImplementedError()
+    }
+
+    open fun embeddedSubtitlesFetched(subtitles: List<SubtitleData>) {
+        throw NotImplementedError()
+    }
+
+    open fun exitedPipMode() {
         throw NotImplementedError()
     }
 
@@ -143,7 +157,7 @@ abstract class AbstractPlayerFragment(
             }
         }
 
-        canEnterPipMode = isPlayingRightNow
+        canEnterPipMode = isPlayingRightNow && hasPipModeSupport
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && isInPIPMode) {
             activity?.let { act ->
                 PlayerPipHelper.updatePIPModeActions(act, isPlayingRightNow)
@@ -157,7 +171,7 @@ abstract class AbstractPlayerFragment(
             isInPIPMode = isInPictureInPictureMode
             if (isInPictureInPictureMode) {
                 // Hide the full-screen UI (controls, etc.) while in picture-in-picture mode.
-                player_holder.alpha = 0f
+                player_holder?.alpha = 0f
                 pipReceiver = object : BroadcastReceiver() {
                     override fun onReceive(
                         context: Context,
@@ -185,7 +199,8 @@ abstract class AbstractPlayerFragment(
                 updateIsPlaying(Pair(isPlayingValue, isPlayingValue))
             } else {
                 // Restore the full-screen UI.
-                player_holder.alpha = 1f
+                player_holder?.alpha = 1f
+                exitedPipMode()
                 pipReceiver?.let {
                     activity?.unregisterReceiver(it)
                 }
@@ -197,11 +212,39 @@ abstract class AbstractPlayerFragment(
         }
     }
 
+    open fun hasNextMirror(): Boolean {
+        throw NotImplementedError()
+    }
+
     open fun nextMirror() {
         throw NotImplementedError()
     }
 
-    private fun playerError(exception: Exception) {
+    private fun requestAudioFocus() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            activity?.requestLocalAudioFocus(AppUtils.getFocusRequest())
+        }
+    }
+
+    open fun playerError(exception: Exception) {
+        fun showToast(message: String, gotoNext: Boolean = false) {
+            if (gotoNext && hasNextMirror()) {
+                showToast(
+                    activity,
+                    message,
+                    Toast.LENGTH_SHORT
+                )
+                nextMirror()
+            } else {
+                showToast(
+                    activity,
+                    context?.getString(R.string.no_links_found_toast) + "\n" + message,
+                    Toast.LENGTH_LONG
+                )
+                activity?.popCurrentPage()
+            }
+        }
+
         val ctx = context ?: return
         when (exception) {
             is PlaybackException -> {
@@ -210,54 +253,44 @@ abstract class AbstractPlayerFragment(
                 when (val code = exception.errorCode) {
                     PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND, PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED, PlaybackException.ERROR_CODE_IO_NO_PERMISSION, PlaybackException.ERROR_CODE_IO_UNSPECIFIED -> {
                         showToast(
-                            activity,
                             "${ctx.getString(R.string.source_error)}\n$errorName ($code)\n$msg",
-                            Toast.LENGTH_SHORT
+                            gotoNext = true
                         )
-                        nextMirror()
                     }
                     PlaybackException.ERROR_CODE_REMOTE_ERROR, PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS, PlaybackException.ERROR_CODE_TIMEOUT, PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED, PlaybackException.ERROR_CODE_IO_INVALID_HTTP_CONTENT_TYPE -> {
                         showToast(
-                            activity,
                             "${ctx.getString(R.string.remote_error)}\n$errorName ($code)\n$msg",
-                            Toast.LENGTH_SHORT
+                            gotoNext = true
                         )
-                        nextMirror()
                     }
                     PlaybackException.ERROR_CODE_DECODING_FAILED, PlaybackErrorEvent.ERROR_AUDIO_TRACK_INIT_FAILED, PlaybackErrorEvent.ERROR_AUDIO_TRACK_OTHER, PlaybackException.ERROR_CODE_AUDIO_TRACK_WRITE_FAILED, PlaybackException.ERROR_CODE_DECODER_INIT_FAILED, PlaybackException.ERROR_CODE_DECODER_QUERY_FAILED -> {
                         showToast(
-                            activity,
                             "${ctx.getString(R.string.render_error)}\n$errorName ($code)\n$msg",
-                            Toast.LENGTH_SHORT
+                            gotoNext = true
                         )
-                        nextMirror()
                     }
                     else -> {
                         showToast(
-                            activity,
                             "${ctx.getString(R.string.unexpected_error)}\n$errorName ($code)\n$msg",
-                            Toast.LENGTH_SHORT
+                            gotoNext = false
                         )
                     }
                 }
             }
             is InvalidFileException -> {
                 showToast(
-                    activity,
                     "${ctx.getString(R.string.source_error)}\n${exception.message}",
-                    Toast.LENGTH_SHORT
+                    gotoNext = true
                 )
-                nextMirror()
             }
             else -> {
-                showToast(activity, exception.message, Toast.LENGTH_SHORT)
+                exception.message?.let {
+                    showToast(
+                        it,
+                        gotoNext = false
+                    )
+                }
             }
-        }
-    }
-
-    private fun requestAudioFocus() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            activity?.requestLocalAudioFocus(AppUtils.getFocusRequest())
         }
     }
 
@@ -281,6 +314,8 @@ abstract class AbstractPlayerFragment(
                 }
             }
 
+            // Necessary for multiple combined videos
+            player_view?.setShowMultiWindowTimeBar(true)
             player_view?.player = player
             player_view?.performClick()
         }
@@ -316,6 +351,7 @@ abstract class AbstractPlayerFragment(
         resizeMode = getKey(RESIZE_MODE_KEY) ?: 0
         resize(resizeMode, false)
 
+        player.releaseCallbacks()
         player.initCallbacks(
             playerUpdated = ::playerUpdated,
             updateIsPlaying = ::updateIsPlaying,
@@ -329,13 +365,17 @@ abstract class AbstractPlayerFragment(
                 SKIP_OP_VIDEO_PERCENTAGE,
                 PRELOAD_NEXT_EPISODE_PERCENTAGE,
                 NEXT_WATCH_EPISODE_PERCENTAGE,
-            ), subtitlesUpdates = ::subtitlesChanged
+                UPDATE_SYNC_PROGRESS_PERCENTAGE,
+            ),
+            subtitlesUpdates = ::subtitlesChanged,
+            embeddedSubtitlesFetched = ::embeddedSubtitlesFetched,
         )
 
         if (player is CS3IPlayer) {
             subView = player_view?.findViewById(R.id.exo_subtitles)
             subStyle = SubtitlesFragment.getCurrentSavedStyle()
             player.initSubtitles(subView, subtitle_holder, subStyle)
+
             SubtitlesFragment.applyStyleEvent += ::onSubStyleChanged
 
             try {
@@ -350,7 +390,7 @@ abstract class AbstractPlayerFragment(
                         settingsManager.getInt(getString(R.string.video_buffer_disk_key), 0)
                     val currentPrefBufferSec =
                         settingsManager.getInt(getString(R.string.video_buffer_length_key), 0)
-                    
+
                     player.cacheSize = currentPrefCacheSize * 1024L * 1024L
                     player.simpleCacheSize = currentPrefDiskSize * 1024L * 1024L
                     player.videoBufferMs = currentPrefBufferSec * 1000L
@@ -379,6 +419,7 @@ abstract class AbstractPlayerFragment(
     override fun onDestroy() {
         playerEventListener = null
         keyEventListener = null
+        canEnterPipMode = false
         SubtitlesFragment.applyStyleEvent -= ::onSubStyleChanged
 
         keepScreenOn(false)

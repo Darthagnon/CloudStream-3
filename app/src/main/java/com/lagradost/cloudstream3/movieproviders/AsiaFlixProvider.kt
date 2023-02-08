@@ -16,7 +16,7 @@ class AsiaFlixProvider : MainAPI() {
     override val hasQuickSearch = false
     override val hasMainPage = true
     override val hasChromecastSupport = false
-    override val supportedTypes = setOf(TvType.TvSeries)
+    override val supportedTypes = setOf(TvType.AsianDrama)
 
     private val apiUrl = "https://api.asiaflix.app/api/v2"
 
@@ -76,21 +76,20 @@ class AsiaFlixProvider : MainAPI() {
             name,
             _id,
             this@AsiaFlixProvider.name,
-            TvType.TvSeries,
+            TvType.AsianDrama,
             image,
             releaseYear,
             episodes?.size,
         )
     }
 
-    private fun Episodes.toTvSeriesEpisode(): TvSeriesEpisode? {
+    private fun Episodes.toEpisode(): Episode? {
         if (videoUrl != null && videoUrl.contains("watch/null") || number == null) return null
         return videoUrl?.let {
-            TvSeriesEpisode(
-                null,
+            Episode(
+                it,
                 null,
                 number,
-                it
             )
         }
     }
@@ -100,23 +99,23 @@ class AsiaFlixProvider : MainAPI() {
             name,
             "$mainUrl$dramaUrl/$_id".replace("drama-detail", "show-details"),
             this@AsiaFlixProvider.name,
-            TvType.TvSeries,
-            episodes.mapNotNull { it.toTvSeriesEpisode() }.sortedBy { it.episode },
+            TvType.AsianDrama,
+            episodes.mapNotNull { it.toEpisode() }.sortedBy { it.episode },
             image,
             releaseYear,
             synopsis,
             getStatus(tvStatus ?: ""),
             null,
-            null,
             genre?.split(",")?.map { it.trim() }
         )
     }
 
-    override suspend fun getMainPage(): HomePageResponse {
+    override suspend fun getMainPage(page: Int, request : MainPageRequest): HomePageResponse {
         val headers = mapOf("X-Requested-By" to "asiaflix-web")
         val response = app.get("$apiUrl/dashboard", headers = headers).text
 
-        val customMapper = mapper.copy().configure(JsonParser.Feature.ALLOW_UNQUOTED_FIELD_NAMES, true)
+        val customMapper =
+            mapper.copy().configure(JsonParser.Feature.ALLOW_UNQUOTED_FIELD_NAMES, true)
         // Hack, because it can either be object or a list
         val cleanedResponse = Regex(""""data":(\{.*?),\{"sectionName"""").replace(response) {
             """"data":null},{"sectionName""""
@@ -146,14 +145,18 @@ class AsiaFlixProvider : MainAPI() {
     ): Boolean {
         if (isCasting) return false
         val headers = mapOf("X-Requested-By" to "asiaflix-web")
-        app.get("$apiUrl/utility/get-stream-links?url=$data", headers = headers).text.toKotlinObject<Link>().url?.let {
+        app.get(
+            "$apiUrl/utility/get-stream-links?url=$data",
+            headers = headers
+        ).text.toKotlinObject<Link>().url?.let {
 //            val fixedUrl = "https://api.asiaflix.app/api/v2/utility/cors-proxy/playlist/${URLEncoder.encode(it, StandardCharsets.UTF_8.toString())}"
             callback.invoke(
                 ExtractorLink(
                     name,
                     name,
                     it,
-                    "https://asianload1.com/", /** <------ This provider should be added instead */
+                    "https://asianload1.com/",
+                    /** <------ This provider should be added instead */
                     getQualityFromName(it),
                     URI(it).path.endsWith(".m3u8")
                 )

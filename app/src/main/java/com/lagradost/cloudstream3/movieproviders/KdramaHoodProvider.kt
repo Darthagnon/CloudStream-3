@@ -1,9 +1,8 @@
 package com.lagradost.cloudstream3.movieproviders
 
-import android.util.Log
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.extractors.*
+import com.lagradost.cloudstream3.extractors.XStreamCdn
 import com.lagradost.cloudstream3.extractors.helper.AsianEmbedHelper
 import com.lagradost.cloudstream3.mvvm.logError
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
@@ -20,31 +19,28 @@ class KdramaHoodProvider : MainAPI() {
     override val hasMainPage = true
     override val hasChromecastSupport = false
     override val hasDownloadSupport = true
-    override val supportedTypes = setOf(TvType.TvSeries, TvType.Movie)
+    override val supportedTypes = setOf(TvType.AsianDrama)
 
     private data class ResponseDatas(
         @JsonProperty("label") val label: String,
         @JsonProperty("file") val file: String
     )
 
-    override suspend fun getMainPage(): HomePageResponse {
+    override suspend fun getMainPage(page: Int, request : MainPageRequest): HomePageResponse {
         val doc = app.get("$mainUrl/home2").document
         val home = ArrayList<HomePageList>()
 
         // Hardcoded homepage cause of site implementation
         // Recently added
         val recentlyInner = doc.selectFirst("div.peliculas")
-        val recentlyAddedTitle = recentlyInner.selectFirst("h1")?.text() ?: "Recently Added"
-        val recentlyAdded = recentlyInner.select("div.item_2.items > div.fit.item")?.mapNotNull {
-            if (it == null) {
-                return@mapNotNull null
-            }
+        val recentlyAddedTitle = recentlyInner!!.selectFirst("h1")?.text() ?: "Recently Added"
+        val recentlyAdded = recentlyInner.select("div.item_2.items > div.fit.item").mapNotNull {
             val innerA = it.select("div.image > a") ?: return@mapNotNull null
             val link = fixUrlNull(innerA.attr("href")) ?: return@mapNotNull null
-            val image = fixUrlNull(innerA.select("img")?.attr("src"))
+            val image = fixUrlNull(innerA.select("img").attr("src"))
 
             val innerData = it.selectFirst("div.data")
-            val title = innerData.selectFirst("h1")?.text() ?: return@mapNotNull null
+            val title = innerData!!.selectFirst("h1")?.text() ?: return@mapNotNull null
             val year = try {
                 val yearText = innerData.selectFirst("span.titulo_o")
                     ?.text()?.takeLast(11)?.trim()?.take(4) ?: ""
@@ -52,7 +48,9 @@ class KdramaHoodProvider : MainAPI() {
                 val rex = Regex("\\((\\d+)")
                 //Log.i(this.name, "Result => (rex value) ${rex.find(yearText)?.value}")
                 rex.find(yearText)?.value?.toIntOrNull()
-            } catch (e: Exception) { null }
+            } catch (e: Exception) {
+                null
+            }
 
             MovieSearchResponse(
                 name = title,
@@ -62,7 +60,7 @@ class KdramaHoodProvider : MainAPI() {
                 posterUrl = image,
                 year = year
             )
-        }?.distinctBy { it.url } ?: listOf()
+        }.distinctBy { it.url } ?: listOf()
         home.add(HomePageList(recentlyAddedTitle, recentlyAdded))
         return HomePageResponse(home.filter { it.list.isNotEmpty() })
     }
@@ -71,7 +69,7 @@ class KdramaHoodProvider : MainAPI() {
         val url = "$mainUrl/?s=$query"
         val html = app.get(url).document
         val document = html.getElementsByTag("body")
-                .select("div.item_1.items > div.item") ?: return listOf()
+            .select("div.item_1.items > div.item") ?: return listOf()
 
         return document.mapNotNull {
             if (it == null) {
@@ -103,29 +101,35 @@ class KdramaHoodProvider : MainAPI() {
         val title = inner?.selectFirst("h1")?.text() ?: ""
         val poster = fixUrlNull(doc.selectFirst("meta[property=og:image]")?.attr("content")) ?: ""
         //Log.i(this.name, "Result => (poster) ${poster}")
-        val info = inner.selectFirst("div#info")
-        val descript = inner?.selectFirst("div.contenidotv > div > p")?.text()
+        val info = inner!!.selectFirst("div#info")
+        val descript = inner.selectFirst("div.contenidotv > div > p")?.text()
         val year = try {
             val startLink = "https://kdramahood.com/drama-release-year/"
             var res: Int? = null
-            info.select("div.metadatac")?.forEach {
-                if (res != null) { return@forEach }
-                if (it == null) { return@forEach }
-                val yearLink = it.select("a")?.attr("href") ?: return@forEach
+            info?.select("div.metadatac")?.forEach {
+                if (res != null) {
+                    return@forEach
+                }
+                if (it == null) {
+                    return@forEach
+                }
+                val yearLink = it.select("a").attr("href") ?: return@forEach
                 if (yearLink.startsWith(startLink)) {
                     res = yearLink.substring(startLink.length).replace("/", "").toIntOrNull()
                 }
             }
             res
-        } catch (e: Exception) { null }
+        } catch (e: Exception) {
+            null
+        }
 
-        val recs = doc.select("div.sidebartv > div.tvitemrel")?.mapNotNull {
+        val recs = doc.select("div.sidebartv > div.tvitemrel").mapNotNull {
             val a = it?.select("a") ?: return@mapNotNull null
             val aUrl = fixUrlNull(a.attr("href")) ?: return@mapNotNull null
             val aImg = a.select("img")
-            val aCover = fixUrlNull(aImg?.attr("src")) ?: fixUrlNull(aImg?.attr("data-src"))
+            val aCover = fixUrlNull(aImg.attr("src")) ?: fixUrlNull(aImg.attr("data-src"))
             val aNameYear = a.select("div.datatvrel") ?: return@mapNotNull null
-            val aName = aNameYear.select("h4")?.text() ?: aImg?.attr("alt") ?: return@mapNotNull null
+            val aName = aNameYear.select("h4").text() ?: aImg.attr("alt") ?: return@mapNotNull null
             val aYear = aName.trim().takeLast(5).removeSuffix(")").toIntOrNull()
             MovieSearchResponse(
                 url = aUrl,
@@ -138,7 +142,7 @@ class KdramaHoodProvider : MainAPI() {
         }
 
         // Episodes Links
-        val episodeList = inner?.select("ul.episodios > li")?.mapNotNull { ep ->
+        val episodeList = inner.select("ul.episodios > li")?.mapNotNull { ep ->
             //Log.i(this.name, "Result => (ep) ${ep}")
             val listOfLinks = mutableListOf<String>()
             val count = ep.select("div.numerando")?.text()?.toIntOrNull() ?: 0
@@ -165,16 +169,19 @@ class KdramaHoodProvider : MainAPI() {
                 }
                 //Fetch default source and subtitles
                 epVidLinkEl.select("div.embed2")?.forEach { defsrc ->
-                    if (defsrc == null) { return@forEach }
+                    if (defsrc == null) {
+                        return@forEach
+                    }
                     val scriptstring = defsrc.toString()
                     if (scriptstring.contains("sources: [{")) {
-                        "(?<=playerInstance2.setup\\()([\\s\\S]*?)(?=\\);)".toRegex().find(scriptstring)?.value?.let { itemjs ->
+                        "(?<=playerInstance2.setup\\()([\\s\\S]*?)(?=\\);)".toRegex()
+                            .find(scriptstring)?.value?.let { itemjs ->
                             listOfLinks.add("$mainUrl$itemjs")
                         }
                     }
                 }
             }
-            TvSeriesEpisode(
+            Episode(
                 name = null,
                 season = null,
                 episode = count,
@@ -182,10 +189,10 @@ class KdramaHoodProvider : MainAPI() {
                 posterUrl = poster,
                 date = null
             )
-        } ?: listOf()
+        }
 
         //If there's only 1 episode, consider it a movie.
-        if (episodeList.size == 1) {
+        if (episodeList?.size == 1) {
             return MovieLoadResponse(
                 name = title,
                 url = url,
@@ -202,8 +209,8 @@ class KdramaHoodProvider : MainAPI() {
             name = title,
             url = url,
             apiName = this.name,
-            type = TvType.TvSeries,
-            episodes = episodeList.reversed(),
+            type = TvType.AsianDrama,
+            episodes = episodeList?.reversed() ?: emptyList(),
             posterUrl = poster,
             year = year,
             plot = descript,
@@ -231,7 +238,7 @@ class KdramaHoodProvider : MainAPI() {
                                 //Log.i(this.name, "Result => (src) ${src.toJson()}")
                                 callback(
                                     ExtractorLink(
-                                        name = "$name ${src.label}",
+                                        name = name,
                                         url = src.file,
                                         quality = getQualityFromName(src.label),
                                         referer = mainUrl,
@@ -268,7 +275,7 @@ class KdramaHoodProvider : MainAPI() {
                     //Log.i(this.name, "Result => (url) $url")
                     when {
                         url.startsWith("https://asianembed.io") -> {
-                            AsianEmbedHelper.getUrls(url, callback)
+                            AsianEmbedHelper.getUrls(url, subtitleCallback, callback)
                         }
                         url.startsWith("https://embedsito.com") -> {
                             val extractor = XStreamCdn()
@@ -278,7 +285,7 @@ class KdramaHoodProvider : MainAPI() {
                             }
                         }
                         else -> {
-                            loadExtractor(url, mainUrl, callback)
+                            loadExtractor(url, mainUrl, subtitleCallback, callback)
                         }
                     }
                 }

@@ -22,6 +22,7 @@ enum class PlayerEventType(val value: Int) {
     ShowSpeed(11),
     ShowMirrors(12),
     Resize(13),
+    SearchSubtitlesOnline(14),
 }
 
 enum class CSPlayerEvent(val value: Int) {
@@ -57,7 +58,7 @@ const val PLAYBACK_SPEED = "playback_speed"
 const val RESIZE_MODE_KEY = "resize_mode" // Last used resize mode
 const val PLAYBACK_SPEED_KEY = "playback_speed" // Last used playback speed
 const val PREFERRED_SUBS_KEY = "preferred_subtitles" // Last used resize mode
-const val PLAYBACK_FASTFORWARD = "playback_fastforward" // Last used resize mode
+//const val PLAYBACK_FASTFORWARD = "playback_fastforward" // Last used resize mode
 
 /** Abstract Exoplayer logic, can be expanded to other players */
 interface IPlayer {
@@ -85,9 +86,13 @@ interface IPlayer {
         nextEpisode: (() -> Unit)? = null,                          // this is used by the player to load the next episode
         prevEpisode: (() -> Unit)? = null,                          // this is used by the player to load the previous episode
         subtitlesUpdates: (() -> Unit)? = null,                     // callback from player to inform that subtitles have updated in some way
+        embeddedSubtitlesFetched: ((List<SubtitleData>) -> Unit)? = null, // callback from player to give all embedded subtitles
     )
+    fun releaseCallbacks()
 
     fun updateSubtitleStyle(style: SaveCaptionStyle)
+    fun saveData()
+
     fun loadPlayer(
         context: Context,
         sameEpisode: Boolean,
@@ -96,6 +101,7 @@ interface IPlayer {
         startPosition: Long? = null,
         subtitles : Set<SubtitleData>,
         subtitle : SubtitleData?,
+        autoPlay : Boolean? = true
     )
 
     fun reloadPlayer(context: Context)
@@ -111,4 +117,7 @@ interface IPlayer {
     fun onResume(context: Context)
 
     fun release()
+
+    /** Get if player is actually used */
+    fun isActive() : Boolean
 }

@@ -2,10 +2,10 @@ package com.lagradost.cloudstream3.animeproviders
 
 import android.annotation.SuppressLint
 import com.fasterxml.jackson.annotation.JsonProperty
-import com.fasterxml.jackson.module.kotlin.readValue
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.network.DdosGuardKiller
 import com.lagradost.cloudstream3.network.getHeaders
+import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.getQualityFromName
 import org.jsoup.nodes.Document
@@ -44,7 +44,7 @@ class TenshiProvider : MainAPI() {
         }
     }*/
 
-    override suspend fun getMainPage(): HomePageResponse {
+    override suspend fun getMainPage(page: Int, request : MainPageRequest): HomePageResponse {
         val items = ArrayList<HomePageList>()
         val soup = app.get(mainUrl, interceptor = ddosGuardKiller).document
         for (section in soup.select("#content > section")) {
@@ -58,11 +58,11 @@ class TenshiProvider : MainAPI() {
                         }
                         val anime = top.select("li > a").map {
                             AnimeSearchResponse(
-                                it.selectFirst(".thumb-title").text(),
+                                it.selectFirst(".thumb-title")!!.text(),
                                 fixUrl(it.attr("href")),
                                 this.name,
                                 TvType.Anime,
-                                it.selectFirst("img").attr("src"),
+                                it.selectFirst("img")!!.attr("src"),
                                 null,
                                 EnumSet.of(DubStatus.Subbed),
                             )
@@ -70,14 +70,14 @@ class TenshiProvider : MainAPI() {
                         items.add(HomePageList(title, anime))
                     }
                 } else {
-                    val title = section.selectFirst("h2").text()
+                    val title = section.selectFirst("h2")!!.text()
                     val anime = section.select("li > a").map {
                         AnimeSearchResponse(
                             it.selectFirst(".thumb-title")?.text() ?: "",
                             fixUrl(it.attr("href")),
                             this.name,
                             TvType.Anime,
-                            it.selectFirst("img").attr("src"),
+                            it.selectFirst("img")!!.attr("src"),
                             null,
                             EnumSet.of(DubStatus.Subbed),
                         )
@@ -104,7 +104,7 @@ class TenshiProvider : MainAPI() {
         val items = soup.select("ul.thumb > li > a")
         return items.map {
             val href = fixUrl(it.attr("href"))
-            val img = fixUrl(it.selectFirst("img").attr("src"))
+            val img = fixUrl(it.selectFirst("img")!!.attr("src"))
             val title = it.attr("title")
             if (getIsMovie(href, true)) {
                 MovieSearchResponse(
@@ -125,16 +125,15 @@ class TenshiProvider : MainAPI() {
     }
 
     @SuppressLint("SimpleDateFormat")
-    private fun dateParser(dateString: String?): String? {
+    private fun dateParser(dateString: String?): Date? {
         if (dateString == null) return null
         try {
             val format = SimpleDateFormat("dd 'of' MMM',' yyyy")
-            val newFormat = SimpleDateFormat("dd-MM-yyyy")
             val data = format.parse(
                 dateString.replace("th ", " ").replace("st ", " ").replace("nd ", " ")
                     .replace("rd ", " ")
             ) ?: return null
-            return newFormat.format(data)
+            return data
         } catch (e: Exception) {
             return null
         }
@@ -226,10 +225,10 @@ class TenshiProvider : MainAPI() {
             interceptor = ddosGuardKiller
         ).document
 
-        val canonicalTitle = document.selectFirst("header.entry-header > h1.mb-3").text().trim()
+        val canonicalTitle = document.selectFirst("header.entry-header > h1.mb-3")!!.text().trim()
         val episodeNodes = document.select("li[class*=\"episode\"] > a").toMutableList()
         val totalEpisodePages = if (document.select(".pagination").size > 0)
-            document.select(".pagination .page-item a.page-link:not([rel])").last().text()
+            document.select(".pagination .page-item a.page-link:not([rel])").last()!!.text()
                 .toIntOrNull()
         else 1
 
@@ -246,17 +245,15 @@ class TenshiProvider : MainAPI() {
 
         val episodes = ArrayList(episodeNodes.map {
             val title = it.selectFirst(".episode-title")?.text()?.trim()
-            AnimeEpisode(
-                it.attr("href"),
-                if(title == "No Title") null else title,
-                it.selectFirst("img")?.attr("src"),
-                dateParser(it?.selectFirst(".episode-date")?.text()?.trim()),
-                null,
-                it.attr("data-content").trim(),
-            )
+            newEpisode(it.attr("href")) {
+                this.name = if (title == "No Title") null else title
+                this.posterUrl = it.selectFirst("img")?.attr("src")
+                addDate(dateParser(it?.selectFirst(".episode-date")?.text()?.trim()))
+                this.description = it.attr("data-content").trim()
+            }
         })
 
-        val similarAnime = document.select("ul.anime-loop > li > a")?.mapNotNull { element ->
+        val similarAnime = document.select("ul.anime-loop > li > a").mapNotNull { element ->
             val href = element.attr("href") ?: return@mapNotNull null
             val title =
                 element.selectFirst("> .overlay > .thumb-title")?.text() ?: return@mapNotNull null
@@ -286,7 +283,7 @@ class TenshiProvider : MainAPI() {
                     ?.trim()
 
             val pattern = Regex("(\\d{4})")
-            val yearText = document.selectFirst("li.release-date .value").text()
+            val yearText = document.selectFirst("li.release-date .value")!!.text()
             year = pattern.find(yearText)?.groupValues?.get(1)?.toIntOrNull()
 
             addEpisodes(DubStatus.Subbed, episodes)
@@ -313,7 +310,6 @@ class TenshiProvider : MainAPI() {
             @JsonProperty("size") val size: Int
         )
 
-        val sources = ArrayList<ExtractorLink>()
         for (source in soup.select("""[aria-labelledby="mirror-dropdown"] > li > a.dropdown-item""")) {
             val release = source.text().replace("/", "").trim()
             val sourceHTML = app.get(
@@ -325,7 +321,7 @@ class TenshiProvider : MainAPI() {
                 sourceHTML
             )
             if (match != null) {
-                val qualities = mapper.readValue<List<Quality>>(
+                val qualities = parseJson<List<Quality>>(
                     match.destructured.component1()
                         .replace("'", "\"")
                         .replace(Regex("""(\w+): """), "\"\$1\": ")
@@ -333,24 +329,24 @@ class TenshiProvider : MainAPI() {
                         .replace(",}", "}")
                         .replace(",]", "]")
                 )
-                sources.addAll(qualities.map {
-                    ExtractorLink(
-                        this.name,
-                        "${this.name} $release - " + it.size + "p",
-                        fixUrl(it.src),
-                        this.mainUrl,
-                        getQualityFromName("${it.size}"),
-                        headers = getHeaders(
-                            mapOf(),
-                            null,
-                            ddosGuardKiller.savedCookiesMap.get(URI(this.mainUrl).host) ?: mapOf()
-                        ).toMap()
+                qualities.forEach {
+                    callback.invoke(
+                        ExtractorLink(
+                            this.name,
+                            "${this.name} $release",
+                            fixUrl(it.src),
+                            this.mainUrl,
+                            getQualityFromName("${it.size}"),
+                            headers = getHeaders(emptyMap(),
+                                ddosGuardKiller.savedCookiesMap[URI(this.mainUrl).host]
+                                    ?: emptyMap()
+                            ).toMap()
+                        )
                     )
-                })
+                }
             }
         }
 
-        sources.forEach(callback)
         return true
     }
 }
